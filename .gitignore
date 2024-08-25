@@ -8,3 +8,7 @@
 log/*
 runs/*
 __pycache__/
+
+*.e*
+*.o*
+*.sh

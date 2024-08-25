@@ -27,19 +27,21 @@ parser.add_argument('--log_name', type=str, default='train.log', help='the name 
 parser.add_argument('--loss_cls', type=float, default=0.3, help='cls loss scale')
 parser.add_argument('--storage', type=bool, default=False, help='whether to storage the model during training')
 parser.add_argument('--yaml', type=str, default='config/default.yaml', help='yaml path')
-
+parser.add_argument('--dataset', type=str, default="AffordQ", help='choose a dataset to train: AfforQ or LangSHAPE?')
+parser.add_argument('--data_mode', type=str, default="full", help='choose a data mode for LangSHAPE')
 opt = parser.parse_args()
 
 seed_torch(seed=42)
 set_gpu_devices(opt.gpu)
 
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from model.PointRefer import get_PointRefer
 from utils.loss import HM_Loss, kl_div
 from utils.eval import evaluating, SIM
 from eval_lyc import evaluate, print_metrics_in_table 
 from data_utils.shapenetpart import AffordQ
+from data_utils.LangSHAPE_dataloader import PartGroundingDataset
 from sklearn.metrics import roc_auc_score
 
 
@@ -59,17 +61,28 @@ def main(opt, dict):
     batch_size = dict['bs']
 
     logger.debug('Start loading train data---')
-    train_dataset = AffordQ('train')
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=8 ,shuffle=True, drop_last=True)
+    if opt.dataset == 'LangSHAPE':
+        train_dataset = PartGroundingDataset(split='train', data_mode=opt.data_mode) 
+    else:
+        train_dataset = AffordQ('train') 
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=8,shuffle=True, drop_last=True)
     logger.debug(f'train data loading finish, loading data files:{len(train_dataset)}')
 
     logger.debug('Start loading val data---')
-    val_dataset = AffordQ('val')
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=8, shuffle=False)
+    if opt.dataset == 'LangSHAPE':
+        val_dataset = PartGroundingDataset(split='val', data_mode=opt.data_mode)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=8, shuffle=False)
+    else:
+        val_dataset = AffordQ('val')
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=8, shuffle=False)
+    
     logger.debug(f'val data loading finish, loading data files:{len(val_dataset)}')
 
     logger.debug('Start loading test data---')
-    test_dataset = AffordQ('test')
+    if opt.dataset == 'LangSHAPE':
+        test_dataset = PartGroundingDataset(split='test', data_mode=opt.data_mode)
+    else:
+        test_dataset = AffordQ('test')
     test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=8, shuffle=False)
     logger.debug(f'test data loading finish, loading data files:{len(test_dataset)}')
 
@@ -88,10 +101,11 @@ def main(opt, dict):
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
     if opt.resume:
-        model_checkpoint = torch.load(opt.checkpoint_path, map_location='cuda:0')
+        model_checkpoint = torch.load(opt.checkpoint_path, map_location=device)
         model.load_state_dict(model_checkpoint['model'])
-        optimizer.load_state_dict(model_checkpoint['optimizer'])
-        start_epoch = model_checkpoint['Epoch']
+        # optimizer.load_state_dict(model_checkpoint['optimizer'])
+        # start_epoch = model_checkpoint['Epoch']
+        start_epoch = -1
     else:
         start_epoch = -1
 
@@ -163,7 +177,7 @@ def main(opt, dict):
                 total_MAE = 0
                 total_point = 0
                 model = model.eval()
-                for i,(point, _, label, question,aff_label) in enumerate(val_loader):
+                for i,(point, _, label, question, aff_label) in enumerate(val_loader):
                     print(f'iteration: {i}|{len(val_loader)} start----')
                     point, label = point.float(), label.float()
                     if(opt.use_gpu):
@@ -200,7 +214,7 @@ def main(opt, dict):
                 AUC = np.zeros((targets.shape[0], targets.shape[2]))
                 IOU = np.zeros((targets.shape[0], targets.shape[2]))
                 IOU_thres = np.linspace(0, 1, 20)
-                targets = targets >= 0.5
+                # targets = targets >= 0.5
                 targets = targets.astype(int)
                 for i in range(AUC.shape[0]):
                     t_true = targets[i]

@@ -207,7 +207,7 @@ if __name__=='__main__':
     parser.add_argument('--gpu', type=str, default='cuda:0', help='gpu device id')
     parser.add_argument('--use_gpu', type=str, default=True, help='whether or not use gpus')
     parser.add_argument('--checkpoint_path', type=str, default='ckpt/PointRefer_Seen.pt', help='checkpoint path')
-    parser.add_argument('--yaml', type=str, default='config/config_seen.yaml', help='yaml path')
+    parser.add_argument('--yaml', type=str, default='config/default.yaml', help='yaml path')
 
     opt = parser.parse_args()
     seed_torch(42)

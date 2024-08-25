@@ -22,7 +22,7 @@ class AffordQ(Dataset):
                  split='train',
                  **kwargs
                  ):
-        data_root='../../3d_affordance/LASO_dataset'
+        data_root='/home/yiyang/data/LASO_dataset'
 
         self.split = split
         #
@@ -78,6 +78,8 @@ class AffordQ(Dataset):
         cls = data['class']
         affordance = data['affordance']
         gt_mask = data['mask']
+        gt_mask = gt_mask > 0.5
+        gt_mask = gt_mask.astype(np.float32)
         point_set = self.objects[str(shape_id)]
         point_set,_,_ = pc_normalize(point_set)
         point_set = point_set.transpose()
@@ -96,4 +98,4 @@ if __name__ == '__main__':
     print(len(train))
     
     for p,cls,mask,q,aff in train:
-        print(q)
+        print(mask)
