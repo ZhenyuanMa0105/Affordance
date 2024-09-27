@@ -115,7 +115,7 @@ def main(opt, dict):
         model = model.train()
         # print(f'cuda memory:{torch.cuda.memory_allocated(opt.gpu) / (1024*1024)}')
         train_loader = tqdm(train_loader, desc=f'Epoch {epoch}')
-        for i,(point, cls, gt_mask, question, aff_label, view_mask, shape_id) in enumerate(train_loader):
+        for i,(point, cls, gt_mask, question, aff_label, view_mask) in enumerate(train_loader):
             optimizer.zero_grad()      
 
             if(opt.use_gpu):
@@ -125,7 +125,7 @@ def main(opt, dict):
                 cls = cls.to(device)
                 view_mask = view_mask.to(device)
 
-            _3d = model(question, point, view_mask, shape_id)
+            _3d = model(question, point, view_mask)
             loss_hm = criterion_hm(_3d, gt_mask)
             # loss_ce = criterion_ce(logits, cls)
 
@@ -167,7 +167,7 @@ def main(opt, dict):
                 total_point = 0
                 model = model.eval()
                 val_loader = tqdm(val_loader, desc=f'Epoch {epoch}')
-                for i,(point, _, label, question, aff_label, view_mask, shape_id) in enumerate(val_loader):
+                for i,(point, _, label, question, aff_label, view_mask) in enumerate(val_loader):
                     # print(f'iteration: {i}|{len(val_loader)} start----')
                     point, label = point.float(), label.float()
                     if(opt.use_gpu):
@@ -175,7 +175,7 @@ def main(opt, dict):
                         label = label.to(device)
                         view_mask = view_mask.to(device)
                     
-                    _3d = model(question, point, view_mask, shape_id)
+                    _3d = model(question, point, view_mask)
 
                     # val_loss_hm = criterion_hm(_3d, label)
                     # val_loss_ce = criterion_ce(logits, aff_label)

@@ -70,7 +70,7 @@ class PointSAM(nn.Module):
         self.query_generator = QueryGenerationModule(self.emb_dim, self.num_heads)
         
 
-    def forward(self, text, xyz, view_mask, shape_id):
+    def forward(self, text, xyz, view_mask):
 
         '''
         text: [B, L, 768]
@@ -83,19 +83,21 @@ class PointSAM(nn.Module):
 
         point_feature = self.point_encoder(xyz)     
 
-        fs = self.geo_pooling(xyz, point_feature, view_mask, shape_id)
+        fs = self.geo_pooling(xyz, point_feature, view_mask)
         t_feat, t_mask = self.forward_text(list(text), xyz.device)  # [batch, q_len, d_model]
+        
         query = self.cross_attn(fs, t_feat, t_feat, key_padding_mask=t_mask)
-
+        
+        query = self.decoder(query, point_feature.transpose(-2, -1), query_pos=self.pos2d)
+        _3daffordance = torch.einsum('blc,bcn->bln', query, point_feature)
+        _3daffordance = _3daffordance.mean(1)
+        
         # t_feat = self.decoder(t_feat, point_feature.transpose(-2, -1), tgt_key_padding_mask=t_mask, query_pos=self.pos1d) # b,l,c
         # t_feat *= t_mask.unsqueeze(-1).float()
         
         # _3daffordance = torch.einsum('blc,bcn->bln', t_feat, point_feature)
         # _3daffordance = _3daffordance.sum(1)/(t_mask.float().sum(1).unsqueeze(-1))
-        
-        query = self.decoder(query, point_feature.transpose(-2, -1), query_pos=self.pos2d)
-        _3daffordance = torch.einsum('blc,bcn->bln', query, point_feature)
-        _3daffordance = _3daffordance.mean(1)
+
         _3daffordance = torch.sigmoid(_3daffordance)
         return _3daffordance.squeeze(-1)
 
