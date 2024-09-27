@@ -1,6 +1,9 @@
-python==3.8.18
+numpy==1.26.4
 tqdm
 pandas
 transformers
 scikit-learn
-h5py==3.9.0
+# h5py==3.9.0
+# torch_scatter
+mitsuba
+matplotlib

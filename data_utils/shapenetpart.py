@@ -46,7 +46,12 @@ class AffordQ(Dataset):
         self.question_df = pd.read_csv(os.path.join(data_root, 'Affordance-Question.csv'))
     
         self.len = len(self.anno)
-       
+        
+        mask_dict_path = f'/home/yiyang/data/Rendered_LASO/mask_dict_{split}.pkl'
+        
+        with open(mask_dict_path, 'rb') as f:
+            self.view_mask = pickle.load(f)
+        
         print(f"load {split} set successfully, lenth {len(self.anno)}")
 
         # sort anno by object class and affordance type
@@ -78,16 +83,14 @@ class AffordQ(Dataset):
         cls = data['class']
         affordance = data['affordance']
         gt_mask = data['mask']
-        gt_mask = gt_mask > 0.5
-        gt_mask = gt_mask.astype(np.float32)
         point_set = self.objects[str(shape_id)]
         point_set,_,_ = pc_normalize(point_set)
         point_set = point_set.transpose()
             
         question = self.find_rephrase(self.question_df, cls, affordance)
         affordance = self.aff2idx[affordance]
-
-        return point_set, self.cls2idx[cls], gt_mask, question, affordance
+        view_mask = self.view_mask[shape_id]
+        return point_set, self.cls2idx[cls], gt_mask, question, affordance, view_mask
 
     def __len__(self):
         return len(self.anno)
@@ -98,4 +101,4 @@ if __name__ == '__main__':
     print(len(train))
     
     for p,cls,mask,q,aff in train:
-        print(mask)
+        print(q)
