@@ -69,17 +69,17 @@ def evaluate(model, test_loader, device, num_votes=3):
 
     with torch.no_grad():
         # Iterate over the test data loader to gather predictions
-        for i, (point, cls, label, question, aff_label) in tqdm(enumerate(test_loader), total=len(test_loader), ascii=True):
+        for i, (point, cls, label, question, aff_label, view_mask) in tqdm(enumerate(test_loader), total=len(test_loader), ascii=True):
             point, label = point.float(), label.float()
             point = point.to(device)  # Ensure the data is on the right device
             label = label.to(device)
-
+            view_mask = view_mask.to(device)
             _3d = torch.zeros_like(label)  # Initialize the structure for aggregated predictions
 
             # Aggregate predictions with voting
             for v in range(num_votes):
                 seed_torch(v)  # Set the seed for reproducibility
-                _3d += model(question, point)  # Add the predictions to the aggregate
+                _3d += model(question, point, view_mask)  # Add the predictions to the aggregate
                 
             _3d /= num_votes  # Average the predictions over all votes
 
@@ -154,7 +154,7 @@ def print_metrics_in_table(category_metrics, affordance_metrics, overall_metrics
                    'move', 'display', 'push', 'pull', 'listen', 'wear', 'press', 'cut', 'stab']
 
     # Set the precision for floating point numbers in pandas
-    pd.set_option('precision', 3)
+    pd.set_option('display.precision', 3)
 
     # Convert the metrics dictionaries into DataFrames
     category_df = pd.DataFrame(category_metrics)

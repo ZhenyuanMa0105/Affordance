@@ -32,13 +32,10 @@ class GeoAwarePooling(nn.Module):
         Returns:
             normalized_xyz: [B, 4, N, 3] - Normalized positions of the points.
         """
-        # Transpose xyz to shape [B, N, 3] for easier operations
-        xyz_t = xyz.transpose(1, 2)  # [B, N, 3]
         
-        # Mask the xyz coordinates based on the point_masks
+        xyz_t = xyz.transpose(1, 2)  # [B, N, 3]
         masked_xyz = xyz_t.unsqueeze(1) * point_masks.unsqueeze(-1)  # [B, 4, N, 3]
-        # valid_xyz = masked_xyz[point_masks.bool()]  # [B, 4, N, 3] -> [B, 4, N', 3]
-        # print(valid_xyz.shape)
+
         # Compute the center of the masked points in each view (mean of valid points)
         valid_points_per_view = point_masks.sum(dim=-1, keepdim=True)  # [B, 4, 1]
         valid_points_per_view = torch.clamp(valid_points_per_view, min=1)
@@ -76,6 +73,7 @@ class GeoAwarePooling(nn.Module):
         B, V, N, emb_dim = masked_features.size()
 
         norm_xyz = self.norm_positions(xyz, point_masks)
+        
         local_xyz = self.pts_proj1(norm_xyz)  # [32, 4, 2048, 512]
         # Compute global feature per view by max pooling valid points, ignoring masked points
         global_xyz, _ = local_xyz.max(dim=-2)  # [B, V, channel_proj]
