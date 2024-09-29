@@ -8,7 +8,7 @@ from model.attention import MultiheadAttention, TransformerEncoder, TransformerD
       TransformerEncoderLayer, TransformerDecoderLayer, PositionEmbeddingSine1D
 from model.point_encoder import PointNet_Encoder
 from model.geo_aware_pooling import GeoAwarePooling
-from model.query_generator import QueryGenerationModule
+# from model.query_generator import QueryGenerationModule
 # from pointnet2_utils import PointNetSetAbstractionMsg,PointNetFeaturePropagation
 # from attention import MultiheadAttention, TransformerEncoder, TransformerDecoder,\
 #       TransformerEncoderLayer, TransformerDecoderLayer, PositionEmbeddingSine1D
@@ -67,7 +67,7 @@ class PointSAM(nn.Module):
         self.decoder = TransformerDecoder(TransformerDecoderLayer(self.emb_dim, nheads=num_heads, dropout=0),num_layers=1, norm=nn.LayerNorm(self.emb_dim))
         self.cross_attn = MultiheadAttention(self.emb_dim, self.num_heads)
         self.geo_pooling = GeoAwarePooling(self.emb_dim)
-        self.query_generator = QueryGenerationModule(self.emb_dim, self.num_heads)
+        # self.query_generator = QueryGenerationModule(self.emb_dim, self.num_heads)
         
 
     def forward(self, text, xyz, view_mask):
@@ -85,14 +85,19 @@ class PointSAM(nn.Module):
 
         fs = self.geo_pooling(xyz, point_feature, view_mask)
         t_feat, t_mask = self.forward_text(list(text), xyz.device)  # [batch, q_len, d_model]
-        
-        query = self.cross_attn(fs, t_feat, t_feat, key_padding_mask=t_mask)
-        
+        # Expand t_mask to match the dimensions of t_feat for broadcasting
+        masked_t_feat = t_feat * t_mask.unsqueeze(-1)  # Shape: [batch_size, q_len, d_model]
+        sum_masked_t_feat = masked_t_feat.sum(dim=1)  # Shape: [batch_size, d_model]
+        valid_counts = t_mask.sum(dim=1).unsqueeze(-1)  # Shape: [batch_size, 1]
+        valid_counts = torch.clamp(valid_counts, min=1)
+        mean_t_feat = sum_masked_t_feat / valid_counts  # Shape: [batch_size, d_model]        
+        # query = self.cross_attn(fs, t_feat, t_feat, key_padding_mask=t_mask)
+        query = fs + mean_t_feat.unsqueeze(1)
         query = self.decoder(query, point_feature.transpose(-2, -1), query_pos=self.pos2d)
         _3daffordance = torch.einsum('blc,bcn->bln', query, point_feature)
         _3daffordance = _3daffordance.mean(1)
         
-        # t_feat = self.decoder(t_feat, point_feature.transpose(-2, -1), tgt_key_padding_mask=t_mask, query_pos=self.pos1d) # b,l,c
+        # t_feat = self.decoder(t_feat, fs.transpose(-2, -1), tgt_key_padding_mask=t_mask, query_pos=self.pos1d) # b,l,c
         # t_feat *= t_mask.unsqueeze(-1).float()
         
         # _3daffordance = torch.einsum('blc,bcn->bln', t_feat, point_feature)

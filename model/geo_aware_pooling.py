@@ -44,15 +44,15 @@ class GeoAwarePooling(nn.Module):
         center = masked_xyz.sum(dim=-2) / valid_points_per_view  # [B, 4, 3]
 
         # Compute relative positions for valid points (points - center)
-        relative_positions = masked_xyz - center.unsqueeze(-2)  # [B, 4, N, 3]
+        relative_positions = xyz_t.unsqueeze(1) - center.unsqueeze(-2)  # [B, 4, N, 3]
 
         # Compute the diameter (max distance between any two points in each view)
         max_segment = masked_xyz.max(dim=-2).values  # [B, 4, 3]
         min_segment = masked_xyz.min(dim=-2).values  # [B, 4, 3]
         diameter = (max_segment - min_segment).max(dim=-1).values  # [B, 4]
-
+        diameter = torch.where(diameter == 0, torch.ones_like(diameter), diameter)
         # Normalize the relative positions by the diameter
-        normalized_xyz = relative_positions / (diameter.unsqueeze(-1).unsqueeze(-1) + 1e-8)  # [B, 4, N, 3]
+        normalized_xyz = relative_positions / diameter.unsqueeze(-1).unsqueeze(-1)  # [B, 4, N, 3]
 
         return normalized_xyz
 
