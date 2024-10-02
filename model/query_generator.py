@@ -46,3 +46,17 @@ class QueryGenerationModule(nn.Module):
 
         return queries, attn_weights
 
+
+class QueryCompoistor(nn.Module):
+    def __init__(self, point_feat_dim=4, text_feat_dim=40, feature_size=512):
+        super(QueryCompoistor, self).__init__()
+        self.point_feat_dim = point_feat_dim
+        self.text_feat_dim = text_feat_dim
+        self.instance_norm = nn.InstanceNorm1d(feature_size)
+    def forward(self, point_features, text_features):
+        normalized_point_features = self.instance_norm(point_features)
+        std_text, mean_text = torch.std_mean(text_features, dim=1, keepdim=True)
+
+        modulated_features = std_text * normalized_point_features + mean_text
+        
+        return modulated_features
