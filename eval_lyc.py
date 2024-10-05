@@ -165,10 +165,10 @@ def print_metrics_in_table(category_metrics, affordance_metrics, overall_metrics
     affordance_df.rename(index={i:affordances[i] for i in range(len(affordances))}, inplace=True)
     if logger:
         # Print the metrics for each category in a tabular format
-        logger.debug("\nCategory Metrics:")
+        logger.debug("\nCategory Metrics:\n")
         logger.debug(category_df.to_string())  # Using to_string to print the entire DataFrame without truncation
 
-        logger.debug("\nAffordance Metrics:")
+        logger.debug("\nAffordance Metrics:\n")
         logger.debug(affordance_df.to_string())  # Using to_string to print the entire DataFrame without truncation
 
         # Print overall metrics
@@ -176,10 +176,10 @@ def print_metrics_in_table(category_metrics, affordance_metrics, overall_metrics
 
     else:
         # Print the metrics for each category in a tabular format
-        print("\nCategory Metrics:")
+        print("\nCategory Metrics:\n")
         print(category_df.to_string())  # Using to_string to print the entire DataFrame without truncation
 
-        print("\nAffordance Metrics:")
+        print("\nAffordance Metrics:\n")
         print(affordance_df.to_string())  # Using to_string to print the entire DataFrame without truncation
 
         # Print overall metrics

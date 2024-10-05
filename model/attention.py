@@ -127,7 +127,98 @@ class MultiheadAttention(nn.Module):
             out = self.out_lin(out)  # (bs, q_length, dim)
         return out
 
+class MultiheadAttentionWithWeight(nn.Module):
+    def __init__(self,
+                 dim,
+                 num_heads,
+                 out_dim=None,
+                 qkv_bias=False,
+                 qk_scale=None,
+                 attn_drop=0.,
+                 proj_drop=0.,
+                 q_project=True,
+                 k_project=True,
+                 v_project=True,
+                 proj_after_att=True,
+                 lan_dim=None):
+        super().__init__()
 
+        self.dim = dim
+        self.num_heads = num_heads
+        self.attn_drop = nn.Dropout(attn_drop)
+        head_dim = dim // num_heads
+        self.scale = qk_scale or head_dim ** -0.5
+        out_dim = out_dim or dim
+
+        assert self.dim % self.num_heads == 0
+
+        self.q_lin = nn.Linear(in_features=lan_dim if lan_dim else self.dim, out_features=self.dim, bias=qkv_bias) if q_project else None
+        self.k_lin = nn.Linear(in_features=self.dim, out_features=self.dim, bias=qkv_bias) if k_project else None
+        self.v_lin = nn.Linear(in_features=self.dim, out_features=self.dim, bias=qkv_bias) if v_project else None
+        
+        self.out_lin = nn.Sequential(nn.Linear(dim, out_dim), nn.Dropout(proj_drop)) if proj_after_att else None
+
+    def forward(self, query, key, value, key_padding_mask=None, attn_mask=None, attn_weight=None, output_attentions=False):
+        """
+        Parameters
+        ----------
+        query: torch.tensor(bs, q_length, dim)
+        key: torch.tensor(bs, k_length, dim)
+        value: torch.tensor(bs, k_length, dim)
+        key_padding_mask: torch.tensor(bs, k_length)
+        attn_weight: torch.tensor(bs, k_length)
+            Precomputed attention weights to be added to attention scores.
+        Outputs
+        -------
+        out: torch.tensor(bs, q_length, out_dim)
+            The output of the attention mechanism.
+        """
+        bs, q_length, dim = query.size()
+        k_length = key.size(1)
+        # assert dim == self.dim, 'Dimensions do not match: %s input vs %s configured' % (dim, self.dim)
+        # assert key.size() == value.size()
+
+        dim_per_head = self.dim // self.num_heads
+
+        mask_reshp = (bs, 1, 1, k_length)
+
+        def shape(x):
+            """ separate heads """
+            return x.view(bs, -1, self.num_heads, dim_per_head).transpose(1, 2)
+
+        def unshape(x):
+            """ group heads """
+            return (
+                x.transpose(1, 2).contiguous().view(bs, -1, self.num_heads * dim_per_head)
+            )
+
+        q = shape(self.q_lin(query)) if self.q_lin else shape(query) # (bs, n_heads, q_length, dim_per_head)
+        k = shape(self.k_lin(key)) if self.k_lin else shape(key)  # (bs, n_heads, k_length, dim_per_head)
+        v = shape(self.v_lin(value))  if self.v_lin else shape(value) # (bs, n_heads, k_length, dim_per_head)
+
+        q = q / math.sqrt(dim_per_head)  # (bs, n_heads, q_length, dim_per_head)
+        attn = torch.matmul(q, k.transpose(2, 3)) * self.scale  # (bs, n_heads, q_length, k_length)
+        
+        if attn_weight is not None:
+            attn_weight = attn_weight.unsqueeze(1).unsqueeze(2)  # (bs, 1, 1, k_length)
+            attn = attn + attn_weight  # Broadcasting over heads and q_length
+
+        if key_padding_mask is not None:
+            key_padding_mask = ((~key_padding_mask).view(mask_reshp).expand_as(attn))  # (bs, n_heads, q_length, k_length)
+            attn.masked_fill_(key_padding_mask, -float("inf"))  # (bs, n_heads, q_length, k_length)
+
+        attn = nn.Softmax(dim=-1)(attn)  # (bs, n_heads, q_length, k_length)
+        attn = self.attn_drop(attn)  # (bs, n_heads, q_length, k_length)
+
+        # Mask heads if we want to
+        if attn_mask is not None:
+            attn = attn * attn_mask
+
+        out = torch.matmul(attn, v)  # (bs, n_heads, q_length, dim_per_head)
+        out = unshape(out)  # (bs, q_length, dim)
+        if self.out_lin:
+            out = self.out_lin(out)  # (bs, q_length, dim)
+        return out
 
 class TransformerEncoderLayer(nn.Module):
 

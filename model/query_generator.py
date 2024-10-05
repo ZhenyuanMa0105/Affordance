@@ -60,3 +60,4 @@ class QueryCompoistor(nn.Module):
         modulated_features = std_text * normalized_point_features + mean_text
         
         return modulated_features
+    
