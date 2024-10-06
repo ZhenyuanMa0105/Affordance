@@ -64,7 +64,6 @@ class ViewTranformer(nn.Module):
 
         return output
 
-
 class ViewGlobalSampler(nn.Module):
     def __init__(self, n_sample=20, emb_dim=512, num_heads=4):
         super().__init__()
@@ -119,6 +118,62 @@ class ViewGlobalSampler(nn.Module):
         )
         return output, combined_mask
 
+class ViewLocalSampler(nn.Module):
+    def __init__(self, n_sample=20, emb_dim=512, num_heads=4):
+        super().__init__()
+        self.n_sample = n_sample
+        self.emb_dim = emb_dim
+        self.self_attn = MultiheadAttention(self.emb_dim, num_heads)
+    def forward(self, point_features, point_masks, t_feat, t_mask):
+        """
+        point_features: [B, emb_dim, N] - Features of the points.
+        point_masks: [B, 4, N] - Binary masks for the points (4 views).
+        
+        Returns:
+        pooled_feature: [B, 4, emb_dim] - The pooled query features for each view.
+        """
+        B, C, N = point_features.shape
+        V = point_masks.shape[1]  # Number of views
+        n_sample_per_view = self.n_sample // V
+        
+        point_features = point_features.transpose(1, 2)  # [B, N, emb_dim]
+        valid_points_per_view = point_masks.sum(dim=-1, keepdim=True)  # [B, 4, 1]
+        voting_ratio = valid_points_per_view.squeeze(-1) / N  # [B, 4]
+        vote_weight = torch.einsum('bi, bij->bj', voting_ratio, point_masks)  # [B, N]
+        vote_weight = vote_weight.unsqueeze(1) * point_masks  # [B, 4, N]
+
+        # Mask invalid points with a large negative value before applying softmax
+        vote_weight = vote_weight.masked_fill(point_masks == 0, -1e9)  # [B, 4, N]
+
+        # Handle edge cases where all points are invalid for a view
+        all_invalid_mask = (point_masks.sum(dim=-1, keepdim=True) == 0)  # [B, 4, 1]
+        vote_weight = vote_weight.masked_fill(all_invalid_mask, 0)  # Set vote_weight to 0 where all points are invalid
+
+        # Apply softmax to create probabilities for each view
+        point_weight = torch.softmax(vote_weight, dim=-1)  # [B, 4, N]
+
+        if self.training:
+            sampled_indices = torch.multinomial(point_weight.view(B * V, N), n_sample_per_view).view(B, V, n_sample_per_view)  # [B, 4, n_sample_per_view]
+        else:
+            sampled_indices = torch.topk(point_weight, n_sample_per_view, dim=-1).indices  # [B, 4, n_sample_per_view]
+
+        # Gather the sampled point features for each view
+        sampled_features = torch.gather(point_features.unsqueeze(1).expand(-1, V, -1, -1), 2, sampled_indices.unsqueeze(-1).expand(-1, -1, -1, C))  # [B, 4, n_sample_per_view, emb_dim]
+        sampled_features = sampled_features.view(B, -1, C)  # [B, 4 * n_sample_per_view, emb_dim]
+
+        # Concatenate sampled features with text features
+        combined_features = torch.cat([sampled_features, t_feat], dim=1)  # [B, n_sample + T, emb_dim]
+        combined_mask = torch.cat([torch.ones(B, self.n_sample, device=point_features.device, dtype=torch.bool), t_mask], dim=1)  # [B, n_sample + T]
+        
+        output = self.self_attn(
+            query=combined_features,  # [B, n_sample + T, emb_dim]
+            key=combined_features,  # [B, n_sample + T, emb_dim]
+            value=combined_features,  # [B, n_sample + T, emb_dim]
+            key_padding_mask=combined_mask,  # [B, n_sample + T]
+        )
+        return output, combined_mask
+
+
 class ViewDistanceSampler(nn.Module):
     def __init__(self, n_sample=20, emb_dim=512, num_heads=4):
         super().__init__()
@@ -148,7 +203,7 @@ class ViewDistanceSampler(nn.Module):
         distances = torch.cdist(xyz_t, center_xyz)  # [B, N, 4]
 
         # Select the closest 5 points for each center point
-        _, closest_indices = torch.topk(-distances, torch.round(self.n_sample / V), dim=1)  # [B, 5, 4]
+        _, closest_indices = torch.topk(-distances, self.n_sample // V, dim=1)  # [B, 5, 4]
         closest_indices = closest_indices.transpose(1, 2).reshape(B, -1)  # [B, 20]
 
         # Gather the closest point features

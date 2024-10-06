@@ -7,7 +7,7 @@ from model.attention import MultiheadAttention, TransformerDecoder, TransformerD
 from model.point_encoder import PointNet_Encoder
 # from model.geo_aware_pooling import GeoAwarePooling
 # from model.view_weight_attn import ViewTranformer
-from model.view_weight_attn import ViewGlobalSampler
+from model.view_weight_attn import ViewGlobalSampler, ViewLocalSampler, ViewDistanceSampler
 from torchvision.ops import roi_align
 from transformers import AutoModel, AutoTokenizer
 
@@ -63,7 +63,9 @@ class PointSAM(nn.Module):
         self.cross_attn = MultiheadAttention(self.emb_dim, self.num_heads)
         # self.geo_pooling = GeoAwarePooling(self.emb_dim)
         # self.view_transformer = ViewTranformer(self.emb_dim)
-        self.view_sampler = ViewGlobalSampler(self.n_sample, self.emb_dim, self.num_heads)
+        # self.view_sampler = ViewGlobalSampler(self.n_sample, self.emb_dim, self.num_heads)
+        self.view_sampler = ViewLocalSampler(self.n_sample, self.emb_dim, self.num_heads)
+        # self.view_sampler = ViewDistanceSampler(self.n_sample, self.emb_dim, self.num_heads)
         # self.query_generator = QueryGenerationModule(self.emb_dim, self.num_heads)
         
 
