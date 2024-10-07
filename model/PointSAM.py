@@ -7,7 +7,7 @@ from model.attention import MultiheadAttention, TransformerDecoder, TransformerD
 from model.point_encoder import PointNet_Encoder
 # from model.geo_aware_pooling import GeoAwarePooling
 # from model.view_weight_attn import ViewTranformer
-from model.view_weight_attn import ViewGlobalSampler, ViewLocalSampler, ViewDistanceSampler
+from model.view_weight_attn import ViewGlobalSampler, ViewLocalSampler, ViewDistanceSampler, FeatureSampler
 from torchvision.ops import roi_align
 from transformers import AutoModel, AutoTokenizer
 
@@ -64,8 +64,9 @@ class PointSAM(nn.Module):
         # self.geo_pooling = GeoAwarePooling(self.emb_dim)
         # self.view_transformer = ViewTranformer(self.emb_dim)
         # self.view_sampler = ViewGlobalSampler(self.n_sample, self.emb_dim, self.num_heads)
-        self.view_sampler = ViewLocalSampler(self.n_sample, self.emb_dim, self.num_heads)
+        # self.view_sampler = ViewLocalSampler(self.n_sample, self.emb_dim, self.num_heads)
         # self.view_sampler = ViewDistanceSampler(self.n_sample, self.emb_dim, self.num_heads)
+        self.view_sampler = FeatureSampler(self.n_sample, self.emb_dim, self.num_heads)
         # self.query_generator = QueryGenerationModule(self.emb_dim, self.num_heads)
         
 
@@ -85,7 +86,7 @@ class PointSAM(nn.Module):
         # fs = self.geo_pooling(xyz, point_feature, view_mask)
         t_feat, t_mask = self.forward_text(list(text), xyz.device)  # [batch, q_len, d_model]
         # query = self.view_transformer(xyz, point_feature, view_mask)
-        query, query_mask = self.view_sampler(point_feature, view_mask, t_feat, t_mask)
+        query, query_mask = self.view_sampler(point_feature, view_mask, t_feat, t_mask, xyz)
         query = self.decoder(query, point_feature.transpose(-2, -1), tgt_key_padding_mask=query_mask, query_pos=self.pos3d)
         _3daffordance = torch.einsum('blc,bcn->bln', query, point_feature)
         query *= query_mask.unsqueeze(-1).float()

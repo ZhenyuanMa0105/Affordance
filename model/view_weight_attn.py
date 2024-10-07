@@ -70,7 +70,7 @@ class ViewGlobalSampler(nn.Module):
         self.n_sample = n_sample
         self.emb_dim = emb_dim
         self.self_attn = MultiheadAttention(self.emb_dim, num_heads)
-    def forward(self, point_features, point_masks, t_feat, t_mask):
+    def forward(self, point_features, point_masks, t_feat, t_mask, xyz=None):
         """
         point_features: [B, emb_dim, N] - Features of the points.
         point_masks: [B, 4, N] - Binary masks for the points (4 views).
@@ -201,13 +201,71 @@ class ViewDistanceSampler(nn.Module):
         center_xyz = masked_xyz.sum(dim=-2) / valid_points_per_view  # [B, 4, 3]
         
         distances = torch.cdist(xyz_t, center_xyz)  # [B, N, 4]
-
-        # Select the closest 5 points for each center point
-        _, closest_indices = torch.topk(-distances, self.n_sample // V, dim=1)  # [B, 5, 4]
-        closest_indices = closest_indices.transpose(1, 2).reshape(B, -1)  # [B, 20]
+        distances = distances.transpose(1, 2)  # [B, 4, N]
+        n_sample_per_view = self.n_sample // V
+        if self.training:
+            probabilities = torch.softmax(-distances, dim=-1)
+            sampled_indices = torch.multinomial(probabilities.view(B * V, N), n_sample_per_view, replacement=False).view(B, V, n_sample_per_view)  # [B, 4, n_sample_per_view]
+        else:
+            # Select the closest 5 points for each center point
+            _, sampled_indices = torch.topk(-distances, n_sample_per_view, dim=-1)  # [B, 4, 5]
+        sampled_indices = sampled_indices.reshape(B, -1)  # [B, 20]
 
         # Gather the closest point features
-        sampled_features = torch.gather(point_features, 1, closest_indices.unsqueeze(-1).expand(-1, -1, C))  # [B, 20, emb_dim]
+        sampled_features = torch.gather(point_features, 1, sampled_indices.unsqueeze(-1).expand(-1, -1, C))  # [B, 20, emb_dim]
+
+        # Concatenate sampled features with text features
+        combined_features = torch.cat([sampled_features, t_feat], dim=1)  # [B, n_sample + T, emb_dim]
+        combined_mask = torch.cat([torch.ones(B, self.n_sample, device=point_features.device, dtype=torch.bool), t_mask], dim=1)  # [B, n_sample + T]
+        
+        output = self.self_attn(
+            query=combined_features,  # [B, n_sample + T, emb_dim]
+            key=combined_features,  # [B, n_sample + T, emb_dim]
+            value=combined_features,  # [B, n_sample + T, emb_dim]
+            key_padding_mask=combined_mask,  # [B, n_sample + T]
+        )
+        return output, combined_mask
+
+class FeatureSampler(nn.Module):
+    def __init__(self, n_sample=20, emb_dim=512, num_heads=4):
+        super().__init__()
+        self.n_sample = n_sample
+        self.emb_dim = emb_dim
+        self.mlp = nn.Sequential(
+            nn.Linear(emb_dim, emb_dim),
+            nn.LayerNorm(emb_dim),
+            nn.ReLU(),
+            nn.Linear(emb_dim, 1, bias=False),
+            nn.Sigmoid()
+        )
+        self.self_attn = MultiheadAttention(self.emb_dim, num_heads)
+    def forward(self, point_features, point_masks, t_feat, t_mask, xyz=None):
+        """
+        point_features: [B, emb_dim, N] - Features of the points.
+        point_masks: [B, 4, N] - Binary masks for the points (4 views).
+        
+        Returns:
+        pooled_feature: [B, 4, emb_dim] - The pooled query features for each view.
+        """
+        B, C, N = point_features.shape
+        _, V, _ = point_masks.shape
+        point_features = point_features.transpose(1, 2)  # [B, N, emb_dim]
+        masked_features = point_features.unsqueeze(1) * point_masks.unsqueeze(-1)
+        valid_mask = point_masks.unsqueeze(-1).expand(-1, -1, -1, C).bool()  # [B, 4, N, emb_dim]
+        mask_value = -1e9
+        masked_features = masked_features.masked_fill(~valid_mask, mask_value)  # [B, V, N, emb_dim]
+        point_weight = self.mlp(masked_features).squeeze(-1)  # [B, V, N]
+        n_sample_per_view = self.n_sample // V
+        if self.training:
+            # [B*4, n_sample_per_view], treat (B*V) as batch for sampling
+            sampled_indices = torch.multinomial(point_weight.view(B * V, N), n_sample_per_view).view(B, V, n_sample_per_view)
+        else:
+            # [B, 4, n_sample_per_view], get the top-k indices
+            sampled_indices = torch.topk(point_weight, n_sample_per_view, dim=-1).indices  # [B, 4, n_sample_per_view]
+        sampled_indices_expanded = sampled_indices.unsqueeze(-1).expand(-1, -1, -1, C)  # [B, 4, n_sample_per_view, emb_dim]
+        point_features_expanded = point_features.unsqueeze(1).expand(-1, V, -1, -1)  # [B, 4, N, emb_dim]
+        sampled_features = torch.gather(point_features_expanded, 2, sampled_indices_expanded)  # [B, 4, n_sample_per_view, emb_dim]
+        sampled_features = sampled_features.view(B, V * n_sample_per_view, C)  # [B, n_sample, emb_dim]
 
         # Concatenate sampled features with text features
         combined_features = torch.cat([sampled_features, t_feat], dim=1)  # [B, n_sample + T, emb_dim]

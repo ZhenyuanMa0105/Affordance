@@ -8,7 +8,7 @@
 log/*
 runs/*
 __pycache__/
-
+pretrain/*
 *.e*
 *.o*
 *.sh
