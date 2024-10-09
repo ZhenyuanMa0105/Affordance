@@ -69,9 +69,9 @@ class PointUni3d(nn.Module):
         
         config = ModelConfig(
             model_name='create_uni3d', 
-            ckpt_path='/path/to/uni3d_model/model.pt', 
+            ckpt_path='pretrain/model.pt', 
             pc_model='eva_giant_patch14_560.m30m_ft_in22k_in1k', 
-            pretrained_pc='/path/to/eva_giant_patch14_560/model.safetensors', 
+            pretrained_pc='pretrain/model.safetensors', 
             pc_feat_dim=1408,
             embed_dim=1024,
             group_size=32,

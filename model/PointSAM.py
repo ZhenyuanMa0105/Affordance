@@ -8,6 +8,7 @@ from model.point_encoder import PointNet_Encoder
 # from model.geo_aware_pooling import GeoAwarePooling
 # from model.view_weight_attn import ViewTranformer
 from model.view_weight_attn import ViewGlobalSampler, ViewLocalSampler, ViewDistanceSampler, FeatureSampler
+from model.uni3d import PointUni3d
 from torchvision.ops import roi_align
 from transformers import AutoModel, AutoTokenizer
 
@@ -50,8 +51,8 @@ class PointSAM(nn.Module):
         self.text_resizer = nn.Sequential(nn.Linear(self.text_encoder.config.hidden_size, emb_dim, bias=True),
                                           nn.LayerNorm(emb_dim, eps=1e-12))
 
-        self.point_encoder = PointNet_Encoder(self.emb_dim, self.normal_channel, self.additional_channel, self.N_p)
-
+        # self.point_encoder = PointNet_Encoder(self.emb_dim, self.normal_channel, self.additional_channel, self.N_p)
+        self.point_encoder = PointUni3d(self.emb_dim, self.normal_channel, self.additional_channel, self.N_p)
         # self.pos1d = nn.Embedding(self.n_groups, self.emb_dim)
         self.pos1d = nn.Parameter(torch.zeros(1, self.n_groups, self.emb_dim))
         nn.init.trunc_normal_(self.pos1d, std = 0.2) 
@@ -65,8 +66,8 @@ class PointSAM(nn.Module):
         # self.view_transformer = ViewTranformer(self.emb_dim)
         # self.view_sampler = ViewGlobalSampler(self.n_sample, self.emb_dim, self.num_heads)
         # self.view_sampler = ViewLocalSampler(self.n_sample, self.emb_dim, self.num_heads)
-        # self.view_sampler = ViewDistanceSampler(self.n_sample, self.emb_dim, self.num_heads)
-        self.view_sampler = FeatureSampler(self.n_sample, self.emb_dim, self.num_heads)
+        self.view_sampler = ViewDistanceSampler(self.n_sample, self.emb_dim, self.num_heads)
+        # self.view_sampler = FeatureSampler(self.n_sample, self.emb_dim, self.num_heads)
         # self.query_generator = QueryGenerationModule(self.emb_dim, self.num_heads)
         
 
