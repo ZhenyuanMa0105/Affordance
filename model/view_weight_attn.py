@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from model.attention import MultiheadAttentionWithWeight, MultiheadAttention
+from timm.models.layers import DropPath
+
 class ViewTranformer(nn.Module):
     def __init__(self, emb_dim=512, num_heads=4):
         super().__init__()
@@ -65,7 +67,7 @@ class ViewTranformer(nn.Module):
         return output
 
 class ViewGlobalSampler(nn.Module):
-    def __init__(self, n_sample=20, emb_dim=512, num_heads=4):
+    def __init__(self, n_sample=20, emb_dim=512, num_heads=8):
         super().__init__()
         self.n_sample = n_sample
         self.emb_dim = emb_dim
@@ -124,7 +126,7 @@ class ViewLocalSampler(nn.Module):
         self.n_sample = n_sample
         self.emb_dim = emb_dim
         self.self_attn = MultiheadAttention(self.emb_dim, num_heads)
-    def forward(self, point_features, point_masks, t_feat, t_mask):
+    def forward(self, point_features, point_masks, t_feat, t_mask, xyz=None):
         """
         point_features: [B, emb_dim, N] - Features of the points.
         point_masks: [B, 4, N] - Binary masks for the points (4 views).
@@ -278,3 +280,77 @@ class FeatureSampler(nn.Module):
             key_padding_mask=combined_mask,  # [B, n_sample + T]
         )
         return output, combined_mask
+
+class DualDistanceSampler(nn.Module):
+    def __init__(self, n_sample=20, emb_dim=512, num_heads=4, drop_path_prob=0.1):
+        super().__init__()
+        self.n_sample = n_sample
+        self.emb_dim = emb_dim
+        self.cross_attn1 = MultiheadAttention(self.emb_dim, num_heads)
+        self.cross_attn2 = MultiheadAttention(self.emb_dim, num_heads)
+        self.mlp = nn.Sequential(
+            nn.GELU(),
+            nn.Linear(emb_dim, emb_dim)
+        )
+        self.drop_path = DropPath(drop_path_prob)
+        self.self_attn = MultiheadAttention(self.emb_dim, num_heads)
+        
+    def forward(self, point_features, point_masks, t_feat, t_mask, xyz):
+        """
+        xyz: [B, 3, N] - Coordinates of the points in the batch.
+        point_features: [B, emb_dim, N] - Features of the points.
+        point_masks: [B, 4, N] - Binary masks for the points (4 views).
+        
+        Returns:
+        pooled_feature: [B, 4, emb_dim] - The pooled query features for each view.
+        """
+        B, C, N = point_features.shape
+        _, V, _ = point_masks.shape
+
+        point_features = point_features.transpose(1, 2)  # [B, N, emb_dim]
+        xyz_t = xyz.transpose(1, 2)  # [B, N, 3]
+        masked_xyz = xyz_t.unsqueeze(1) * point_masks.unsqueeze(-1)  # [B, 4, N, 3]
+
+        valid_points_per_view = point_masks.sum(dim=-1, keepdim=True)  # [B, 4, 1]
+        valid_points_per_view = torch.clamp(valid_points_per_view, min=1)
+        center_xyz = masked_xyz.sum(dim=-2) / valid_points_per_view  # [B, 4, 3]
+        
+        distances = torch.cdist(xyz_t, center_xyz)  # [B, N, 4]
+        distances = distances.transpose(1, 2)  # [B, 4, N]
+        n_sample_per_view = self.n_sample // V
+        if self.training:
+            probabilities = torch.softmax(-distances, dim=-1)
+            sampled_indices = torch.multinomial(probabilities.view(B * V, N), n_sample_per_view, replacement=False).view(B, V, n_sample_per_view)  # [B, 4, n_sample_per_view]
+        else:
+            # Select the closest 5 points for each center point
+            _, sampled_indices = torch.topk(-distances, n_sample_per_view, dim=-1)  # [B, 4, 5]
+        sampled_indices = sampled_indices.reshape(B, -1)  # [B, 20]
+
+        # Gather the closest point features
+        sampled_features = torch.gather(point_features, 1, sampled_indices.unsqueeze(-1).expand(-1, -1, C))  # [B, 20, emb_dim]
+        
+        cross_features1 = self.cross_attn1(
+            query=sampled_features,  # [B, 20, emb_dim]
+            key=t_feat,  # [B, 20, emb_dim]
+            value=t_feat,  # [B, 20, emb_dim]
+            key_padding_mask=t_mask,  # [B, 20]
+        )
+        
+        cross_features2 = self.cross_attn2(
+            query=t_feat,  # [B, 20, emb_dim]
+            key=sampled_features,  # [B, 20, emb_dim]
+            value=sampled_features,  # [B, 20, emb_dim]
+        )
+        
+        # combined_features = torch.cat([cross_features1, cross_features2], dim=1)
+        sampled_features = sampled_features + self.drop_path(self.mlp(cross_features1))
+        t_feat = t_feat + self.drop_path(self.mlp(cross_features2))
+        combined_features = torch.cat([sampled_features, t_feat], dim=1)  # [B, n_sample + T, emb_dim]
+        combined_mask = torch.cat([torch.ones(B, self.n_sample, device=point_features.device, dtype=torch.bool), t_mask], dim=1)  # [B, n_sample + T]
+        # combined_features = self.self_attn(
+        #     query=combined_features,  # [B, n_sample + T, emb_dim]
+        #     key=combined_features,  # [B, n_sample + T, emb_dim]
+        #     value=combined_features,  # [B, n_sample + T, emb_dim]
+        #     key_padding_mask=combined_mask,  # [B, n_sample + T]
+        # )
+        return combined_features, combined_mask

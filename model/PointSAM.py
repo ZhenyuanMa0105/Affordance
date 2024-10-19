@@ -7,7 +7,7 @@ from model.attention import MultiheadAttention, TransformerDecoder, TransformerD
 from model.point_encoder import PointNet_Encoder
 # from model.geo_aware_pooling import GeoAwarePooling
 # from model.view_weight_attn import ViewTranformer
-from model.view_weight_attn import ViewGlobalSampler, ViewLocalSampler, ViewDistanceSampler, FeatureSampler
+from model.view_weight_attn import ViewTranformer, ViewGlobalSampler, ViewLocalSampler, ViewDistanceSampler, DualDistanceSampler
 from model.uni3d import PointUni3d
 from torchvision.ops import roi_align
 from transformers import AutoModel, AutoTokenizer
@@ -17,8 +17,10 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false" # this disables a huggingface tok
 
 class PointSAM(nn.Module):
     def __init__(self, normal_channel=False, local_rank=None,
-                N_p = 64, emb_dim = 512, proj_dim = 512, num_heads = 4, N_raw = 2048, num_affordance=18,
-                freeze_text_encoder = False, text_encoder_type="roberta-base", n_groups=40, n_sample=20):
+                N_p = 64, emb_dim = 512, proj_dim = 512, num_heads = 4, 
+                N_raw = 2048, num_affordance=18, freeze_text_encoder = False, 
+                text_encoder_type="roberta-base", n_groups=40, n_sample=20, 
+                point_encoder='uni3d'):
         class SwapAxes(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -50,9 +52,10 @@ class PointSAM(nn.Module):
                 p.requires_grad_(False)
         self.text_resizer = nn.Sequential(nn.Linear(self.text_encoder.config.hidden_size, emb_dim, bias=True),
                                           nn.LayerNorm(emb_dim, eps=1e-12))
-
-        # self.point_encoder = PointNet_Encoder(self.emb_dim, self.normal_channel, self.additional_channel, self.N_p)
-        self.point_encoder = PointUni3d(self.emb_dim, self.normal_channel, self.additional_channel, self.N_p)
+        if point_encoder == 'uni3d':
+            self.point_encoder = PointUni3d(self.emb_dim, self.normal_channel, self.additional_channel, self.N_p)
+        else:
+            self.point_encoder = PointNet_Encoder(self.emb_dim, self.normal_channel, self.additional_channel, self.N_p)
         # self.pos1d = nn.Embedding(self.n_groups, self.emb_dim)
         self.pos1d = nn.Parameter(torch.zeros(1, self.n_groups, self.emb_dim))
         nn.init.trunc_normal_(self.pos1d, std = 0.2) 
@@ -61,13 +64,13 @@ class PointSAM(nn.Module):
         self.pos3d = nn.Parameter(torch.zeros(1, self.n_sample + self.n_groups, self.emb_dim))
         nn.init.trunc_normal_(self.pos3d, std = 0.2)
         self.decoder = TransformerDecoder(TransformerDecoderLayer(self.emb_dim, nheads=num_heads, dropout=0),num_layers=1, norm=nn.LayerNorm(self.emb_dim))
-        self.cross_attn = MultiheadAttention(self.emb_dim, self.num_heads)
+        # self.cross_attn = MultiheadAttention(self.emb_dim, self.num_heads)
         # self.geo_pooling = GeoAwarePooling(self.emb_dim)
         # self.view_transformer = ViewTranformer(self.emb_dim)
         # self.view_sampler = ViewGlobalSampler(self.n_sample, self.emb_dim, self.num_heads)
         # self.view_sampler = ViewLocalSampler(self.n_sample, self.emb_dim, self.num_heads)
-        self.view_sampler = ViewDistanceSampler(self.n_sample, self.emb_dim, self.num_heads)
-        # self.view_sampler = FeatureSampler(self.n_sample, self.emb_dim, self.num_heads)
+        # self.view_sampler = ViewDistanceSampler(self.n_sample, self.emb_dim, self.num_heads)
+        self.view_sampler = DualDistanceSampler(self.n_sample, self.emb_dim, self.num_heads)
         # self.query_generator = QueryGenerationModule(self.emb_dim, self.num_heads)
         
 
@@ -134,10 +137,12 @@ class PointSAM(nn.Module):
         return self.text_resizer(encoded_text), tokenized_queries.attention_mask.bool()
 
 def get_PointSAM(normal_channel=False, local_rank=None,
-    N_p = 64, emb_dim = 512, proj_dim = 512, num_heads = 4, N_raw = 2048, num_affordance=17, n_groups=40, n_sample=20):
+    N_p = 64, emb_dim = 512, proj_dim = 512, num_heads = 4, 
+    N_raw = 2048, num_affordance=17, n_groups=40, n_sample=20, point_encoder='uni3d'):
     
     model = PointSAM( normal_channel, local_rank,
-    N_p, emb_dim, proj_dim, num_heads, N_raw, num_affordance, n_groups=n_groups, n_sample=n_sample)
+        N_p, emb_dim, proj_dim, num_heads, N_raw, num_affordance, 
+        n_groups=n_groups, n_sample=n_sample, point_encoder=point_encoder)
     return model
 
 

@@ -17,6 +17,7 @@ parser.add_argument("-epoch", type=int, action="store", help="epoch for train", 
 # parser.add_argument('-radius', type=float, default=0.1, help='radius for ball query in last decoder')
 parser.add_argument("-n_groups", type=int, action="store", help="num of queres", default=40)
 parser.add_argument("-n_sample", type=int, action="store", help="num of sample", default=20)
+parser.add_argument('-point_encoder', type=str, default='uni3d', help='point encoder')
 parser.add_argument("-gpu", type=int, help="set gpu id", default=1) 
 parser.add_argument('--decay_rate', type=float, default=1e-3, help='weight decay [default: 1e-3]')
 parser.add_argument('--use_gpu', type=str, default=True, help='whether or not use gpus')
@@ -77,7 +78,7 @@ def main(opt, dict):
     model = get_PointSAM(emb_dim=dict['emb_dim'], proj_dim=dict['proj_dim'],
                          num_heads=dict['num_heads'], N_raw=dict['N_raw'], 
                          num_affordance = dict['num_affordance'], 
-                        n_groups=opt.n_groups, n_sample=opt.n_sample)
+                        n_groups=opt.n_groups, n_sample=opt.n_sample, point_encoder=opt.point_encoder)
 
     criterion_hm = HM_Loss()
     # criterion_focal = SoftLabelFocalLoss()
