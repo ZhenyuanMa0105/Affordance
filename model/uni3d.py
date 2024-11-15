@@ -9,6 +9,8 @@ from . import uni3d
 from model.pointnet2_utils import farthest_point_sample
 
 import logging
+from collections import OrderedDict
+from model.mm_group import GPBlock
 
 class Point_Encoder(nn.Module):
     def __init__(self, emb_dim, normal_channel, additional_channel, N_p):
@@ -53,25 +55,37 @@ class ModelConfig:
 
 
 class PointUni3d(nn.Module):
-    def __init__(self, emb_dim, normal_channel, additional_channel, N_p):
+    def __init__(self, n_groups, emb_dim, normal_channel, additional_channel, N_p, text_backbone, tokenizer, text_resizer):
         super().__init__()
         
+        self.n_groups = n_groups
         self.emb_dim = emb_dim
         self.N_p = N_p
         self.normal_channel = normal_channel
         self.additional_channel = additional_channel
+        self.text_backbone = text_backbone
+        '''
+        for param in self.text_backbone.parameters():
+            param.requires_grad = False
+        '''
+        self.tokenizer = tokenizer
+        self.text_resizer = text_resizer
+        self.num_layers = 4
+        self.adapter_dim = 64
+        self.adapter_upper_dim = 768
 
         self.point_encoder = Point_Encoder(self.emb_dim, self.normal_channel, self.additional_channel, self.N_p)
 
-
+        self.gpb_1 = GPBlock(embed_dims=self.adapter_upper_dim, num_group_token=self.n_groups, lan_dim=self.adapter_upper_dim) 
+        self.gpb_2 = GPBlock(embed_dims=self.adapter_upper_dim, num_group_token=512, lan_dim=self.adapter_upper_dim) 
         self.fp1 = PointNetFeaturePropagation(in_channel=518+self.additional_channel, mlp=[512, 512]) 
         self.pool = nn.AdaptiveAvgPool1d(1)
         
         config = ModelConfig(
             model_name='create_uni3d', 
-            ckpt_path='pretrain/model.pt', 
+            ckpt_path='/storage_fast/ycli/zhenyuan/LASO/model/uni3d_model/model.pt', 
             pc_model='eva_giant_patch14_560.m30m_ft_in22k_in1k', 
-            pretrained_pc='pretrain/model.safetensors', 
+            pretrained_pc='/storage_fast/ycli/zhenyuan/LASO/model/eva_giant_patch14_560/model.safetensors',
             pc_feat_dim=1408,
             embed_dim=1024,
             group_size=32,
@@ -92,9 +106,18 @@ class PointUni3d(nn.Module):
             sd = {k[len('module.'):]: v for k, v in sd.items()}
         self.model.load_state_dict(sd)
         self.trans2encoder = nn.Linear(config.embed_dim, 512)
+        
+        self.shared_middle_layers_1 = nn.ModuleList([nn.Sequential(nn.Linear(self.adapter_upper_dim, self.adapter_dim), nn.ReLU(), nn.Linear(self.adapter_dim, self.adapter_dim), nn.Linear(self.adapter_dim, self.adapter_upper_dim)) for _ in range(self.num_layers)])
+        self.text_adapters_1 = self._build_adapters(self.text_backbone.config.hidden_size, config.pc_feat_dim, self.adapter_upper_dim, self.num_layers)
+        self.image_adapters_1 = self._build_adapters(config.pc_feat_dim, self.text_backbone.config.hidden_size, self.adapter_upper_dim, self.num_layers)
+        
+        self.shared_middle_layers_2 = nn.ModuleList([nn.Sequential(nn.Linear(self.adapter_upper_dim, self.adapter_dim), nn.ReLU(), nn.Linear(self.adapter_dim, self.adapter_dim), nn.Linear(self.adapter_dim, self.adapter_upper_dim)) for _ in range(self.num_layers)])
+        self.text_adapters_2 = self._build_adapters(self.text_backbone.config.hidden_size, config.pc_feat_dim, self.adapter_upper_dim, self.num_layers)
+        self.image_adapters_2 = self._build_adapters(config.pc_feat_dim, self.text_backbone.config.hidden_size, self.adapter_upper_dim, self.num_layers)
+        self.ImageLayerNorm = nn.LayerNorm(config.pc_feat_dim)
 
 
-    def forward(self, xyz):
+    def forward(self, xyz, text_queries, device):
 
         '''
         xyz: [B, 3, 2048]
@@ -102,14 +125,136 @@ class PointUni3d(nn.Module):
 
         B, C, N = xyz.size()
         rgb = torch.full((B, 3, N), 0.4, device=xyz.device)  
-        feature = torch.cat((xyz, rgb), dim=1)  
+        feature = torch.cat((xyz, rgb), dim=1)
+        uni3d_model = get_model(self.model)
+        for param in uni3d_model.parameters():
+            param.requires_grad = False
+        F_p_wise = uni3d_model.encode_pc(feature.transpose(1, 2).contiguous(), -1, len(self.text_backbone.encoder.layer), None, "enumerate")
+        x, center= F_p_wise
+        tokenized_queries = self.tokenizer.batch_encode_plus(
+            text_queries, 
+            padding='max_length', 
+            truncation=True, 
+            max_length=self.n_groups, 
+            return_tensors='pt'
+        )
+        tokenized_queries = tokenized_queries.to(device)
+        t_mask = tokenized_queries.attention_mask.bool()
+        encoder_attention_mask = t_mask[:, None, None, :]  # Shape: [batch_size, 1, 1, seq_length]
 
-        with torch.no_grad():
-            F_p_wise = get_model(self.model).encode_pc(feature.transpose(1, 2).contiguous())
-        x, p_1, center = F_p_wise
-        x = x / x.norm(dim=-1, keepdim=True)
+        encoder_attention_mask = encoder_attention_mask.to(dtype=torch.float)  # Match dtype of attention_scores
+        encoder_attention_mask = (1.0 - encoder_attention_mask) * torch.finfo(torch.float).min  # Convert 1 -> 0 and 0 -> -inf
+        
+        text_hidden_states = self.text_backbone.embeddings(input_ids=tokenized_queries['input_ids'])
+        
+        image_hidden_states = x
+        
+        #("length of roberta:", len(self.text_backbone.encoder.layer))
+        #print("hiddensize of roberta:", self.text_backbone.config.hidden_size)
+        
+        for i in range(len(self.text_backbone.encoder.layer)):
+            text_layer = self.text_backbone.encoder.layer[i]
+            if i >= len(self.text_backbone.encoder.layer) - self.num_layers:
+                F_p_wise = uni3d_model.encode_pc(None, i, len(self.text_backbone.encoder.layer), image_hidden_states, "norm")
+                image_hidden_states_norm, _= F_p_wise
+                F_p_wise = uni3d_model.encode_pc(None, i, len(self.text_backbone.encoder.layer), image_hidden_states_norm, "attention")
+                #image_hidden_states_norm = image_hidden_states_norm[:, 1:, :] 
+                image_hidden_states_attn, _= F_p_wise
+                #print("norm1.shape:", image_hidden_states_attn.shape)
+                #cls = image_hidden_states_attn[:, 0, :].unsqueeze(1)
+                #image_hidden_states_attn = image_hidden_states_attn[:, 1:, :] 
+                
+                #text_hidden_states_norm = text_layer.attention.output.LayerNorm(text_hidden_states)
+                text_adapter_1_output = self.text_adapters_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].down(text_hidden_states)
+                text_adapter_1_output_temp = self.shared_middle_layers_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)](text_adapter_1_output)
+                
+                image_adapter_1_output = self.image_adapters_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].down(image_hidden_states_norm)
+                image_adapter_1_output = self.shared_middle_layers_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)](image_adapter_1_output)
+                
+                #print("text_adapter_1_output.shape:", text_adapter_1_output.shape)
+                #print("image_adapter_1_output.shape:", image_adapter_1_output.shape)
+                #text_adapter_1_output_gpb = self.gpb_1(text_adapter_1_output, image_adapter_1_output)
+                #print("text_adapter_1_output_gpb.shape:", text_adapter_1_output_gpb.shape)
+                #image_adapter_1_output = self.gpb_2(image_adapter_1_output, text_adapter_1_output)
+                #print("image_adapter_1_output.shape:", image_adapter_1_output.shape)
+                
+                text_adapter_1_output = self.text_adapters_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].up(image_adapter_1_output)
+                image_adapter_1_output = self.image_adapters_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].up(text_adapter_1_output_temp)
+
+                #print("image_adapter_1_output.shape:", image_adapter_1_output.shape)
+                #print("text_hidden_states.shape:", text_hidden_states.shape)
+                #print("mask.shape:", t_mask.shape)
+                text_attn_self = text_layer.attention.self(hidden_states=text_hidden_states, attention_mask=encoder_attention_mask)[0]
+                text_attn = text_layer.attention.output.dense(text_attn_self)
+                text_attn = text_layer.attention.output.dropout(text_attn)
+                text_attn = text_hidden_states + image_adapter_1_output + text_attn
+                text_attn = text_layer.attention.output.LayerNorm(text_attn)
+                #text_attn = (text_attn,) + text_attn_self[1:]
+                text_hidden_states = text_attn
+                #text_hidden_states = text_layer.attention.output.LayerNorm(text_hidden_states)
+                '''
+                text_attn = text_layer.attention.self(hidden_states=text_hidden_states, attention_mask=t_mask.unsqueeze(1).unsqueeze(2))[0]
+                #text_attn = text_layer.attention.self(hidden_states=text_hidden_states_norm, attention_mask=t_mask.unsqueeze(1).unsqueeze(2))[0]
+                text_attn = text_layer.attention.output.dense(text_attn)
+                text_attn = text_layer.attention.output.dropout(text_attn)
+                text_hidden_states = text_hidden_states + image_adapter_1_output + text_attn
+                text_attn = text_layer.attention.output.LayerNorm(text_attn)
+                '''
+                #text_hidden_states = text_hidden_states + image_adapter_1_output + text_attn
+                image_hidden_states = image_hidden_states + text_adapter_1_output + image_hidden_states_attn
+                #image_hidden_states = self.ImageLayerNorm(image_hidden_states)
+                #image_hidden_states = image_hidden_states[:, 1:, :] + text_adapter_1_output + image_hidden_states_attn
+                #image_hidden_states = torch.cat((cls, image_hidden_states), dim=1)
+                
+                
+                
+                F_p_wise = uni3d_model.encode_pc(None, i, len(self.text_backbone.encoder.layer), image_hidden_states, "mlp")
+                image_hidden_states_norm, _= F_p_wise
+                #cls = image_hidden_states_norm[:, 0, :].unsqueeze(1)
+                #image_hidden_states_norm = image_hidden_states_norm[:, 1:, :]
+                
+                text_adapter_2_output = self.text_adapters_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].down(text_hidden_states)
+                text_adapter_2_output_temp = self.shared_middle_layers_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)](text_adapter_2_output)
+                
+                image_adapter_2_output = self.image_adapters_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].down(image_hidden_states)
+                #image_adapter_2_output = self.image_adapters_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].down(image_hidden_states[:, 1:, :])
+                image_adapter_2_output = self.shared_middle_layers_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)](image_adapter_2_output)
+                
+                #text_adapter_2_output_gpb = self.gpb_1(text_adapter_2_output, image_adapter_2_output)
+                #print("text_adapter_2_output_gpb.shape:", text_adapter_2_output_gpb.shape)
+                #image_adapter_2_output = self.gpb_2(image_adapter_2_output, text_adapter_2_output)
+                #print("image_adapter_2_output.shape:", image_adapter_2_output.shape)
+                text_adapter_2_output = self.text_adapters_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].up(image_adapter_2_output)
+                image_adapter_2_output = self.image_adapters_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].up(text_adapter_2_output_temp)
+                
+                #layernorm2_output = text_layer.attention.output.LayerNorm(text_hidden_states)
+                mlp_output = text_layer.intermediate.dense(text_hidden_states)
+                mlp_output = text_layer.intermediate.intermediate_act_fn(mlp_output)
+                mlp_output = text_layer.output.dense(mlp_output)
+                mlp_output = text_layer.output.dropout(mlp_output)  
+                mlp_output = text_hidden_states + image_adapter_2_output + mlp_output
+                mlp_output = text_layer.output.LayerNorm(mlp_output)
+                #text_mlp = text_layer.output(text_layer.intermediate(text_hidden_states))
+                #print("text_mlp.shape:", mlp_output.shape)
+                
+                text_hidden_states = mlp_output
+                #text_hidden_states = text_layer.output.LayerNorm(text_hidden_states)
+                image_hidden_states = image_hidden_states + text_adapter_2_output + image_hidden_states_norm
+                #image_hidden_states = self.ImageLayerNorm(image_hidden_states)
+                #image_hidden_states = image_hidden_states[:, 1:, :] + text_adapter_2_output + image_hidden_states_norm
+                #image_hidden_states = torch.cat((cls, image_hidden_states), dim=1)
+            
+            else:
+                text_hidden_states = text_layer(text_hidden_states, attention_mask=encoder_attention_mask)[0]
+                F_p_wise = uni3d_model.encode_pc(None, i, len(self.text_backbone.encoder.layer), image_hidden_states, "entire")
+                image_hidden_states, _= F_p_wise
+        
+        F_p_wise = uni3d_model.encode_pc(None, len(self.text_backbone.encoder.layer), len(self.text_backbone.encoder.layer), image_hidden_states, None)
+        image_hidden_states, _= F_p_wise           
+        text_features = text_hidden_states    
+        x = image_hidden_states / image_hidden_states.norm(dim=-1, keepdim=True)
  
-        x = self.trans2encoder(x).to("cuda")
+        x = self.trans2encoder(x).to(xyz.device)
         up_sample = x.permute(0, 2, 1)  
 
         """ 
@@ -119,7 +264,25 @@ class PointUni3d(nn.Module):
         points2 = up_sample  
         up_sample = self.fp1(xyz, center.permute(0, 2, 1), points1, points2) # [B, C(512), N(2048)]
 
-        return up_sample
+        return up_sample, self.text_resizer(text_features), t_mask
+    
+    
+    def _build_adapters(self, input_dim, output_dim, adapter_dim, num_layers):
+        adapters = [None] * num_layers
+        for i in range(num_layers):
+            adapters[i] = nn.Sequential(OrderedDict([
+                ("down", nn.Sequential(nn.Linear(input_dim, adapter_dim), nn.ReLU())),
+                ("up", nn.Linear(adapter_dim, output_dim))
+            ]))
+        adapters = nn.ModuleList([a for a in adapters])
+        for m in adapters.modules():
+            if isinstance(m, nn.Linear):
+                #nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                #nn.init.trunc_normal_(m.weight, mean=0.0, std=0.001, a=-2, b=2)
+                nn.init.constant_(m.weight, 0)
+                nn.init.constant_(m.bias, 0)
+        return adapters
+    
 
 class Uni3D(nn.Module):
     def __init__(self, point_encoder):
@@ -127,10 +290,13 @@ class Uni3D(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.point_encoder = point_encoder
 
-    def encode_pc(self, pc):
-        xyz = pc[:,:,:3].contiguous()
-        color = pc[:,:,3:].contiguous()
-        pc_feat = self.point_encoder(xyz, color)
+    def encode_pc(self, pc, blk_id, text_encoder_len, hidden_state, type):
+        if pc != None:
+            xyz = pc[:,:,:3].contiguous()
+            color = pc[:,:,3:].contiguous()
+            pc_feat = self.point_encoder(xyz, color, blk_id, text_encoder_len, hidden_state, type)
+        else:
+            pc_feat = self.point_encoder(None, None, blk_id, text_encoder_len, hidden_state, type)
         return pc_feat
 
     def forward(self, pc, text, image):
@@ -355,38 +521,62 @@ class PointcloudEncoder(nn.Module):
         self.visual = point_transformer
 
 
-    def forward(self, pts, colors):
-        # divide the point cloud in the same form. This is important
-        _, center, features = self.group_divider(pts, colors)
+    def forward(self, pts, colors, blk_id, text_encoder_len, hidden_state, type):
+        blk_id += len(self.visual.blocks) - text_encoder_len
+        #print(self.visual)
+        if blk_id < len(self.visual.blocks) - text_encoder_len:
+            # divide the point cloud in the same form. This is important
+            _, center, features = self.group_divider(pts, colors)
+            
+            # encode the input cloud patches
+            group_input_tokens = self.encoder(features)  # B G N
+            trans_group_input_tokens = self.encoder2trans(group_input_tokens)
+            
+            # prepare cls
+            cls_tokens = self.cls_token.expand(trans_group_input_tokens.size(0), -1, -1)
+            cls_pos = self.cls_pos.expand(trans_group_input_tokens.size(0), -1, -1)
+
+            # add pos embedding
+            pos = self.pos_embed(center)  # [B, 512, 3]-->[B, 512, trans_dim]
+
+            # final input
+            x = torch.cat((cls_tokens, trans_group_input_tokens), dim=1)
+            pos = torch.cat((cls_pos, pos), dim=1)
+            # transformer
+            x = x + pos
+            # x = x.half()
+
+            # a patch_dropout of 0. would mean it is disabled and this function would do nothing but return what was passed in
+            x = self.patch_dropout(x)
+            x = self.visual.pos_drop(x)
+
         
-        # encode the input cloud patches
-        group_input_tokens = self.encoder(features)  # B G N
-        trans_group_input_tokens = self.encoder2trans(group_input_tokens)
-        
-        # prepare cls
-        cls_tokens = self.cls_token.expand(trans_group_input_tokens.size(0), -1, -1)
-        cls_pos = self.cls_pos.expand(trans_group_input_tokens.size(0), -1, -1)
+            # ModuleList not support forward
+            for i, blk in enumerate(self.visual.blocks):
+                x = blk(x)
+                if i == len(self.visual.blocks) - text_encoder_len - 1:
+                    output = x                    
+            
+        elif blk_id >= len(self.visual.blocks) - text_encoder_len and blk_id < len(self.visual.blocks):
+            if type == "entire":
+                blk = self.visual.blocks[blk_id]
+                output = blk(hidden_state)
+            elif type == "norm":
+                output = self.visual.blocks[blk_id].norm1(hidden_state)  # First norm
+                
+            elif type == "attention":
+                output = self.visual.blocks[blk_id].attn(hidden_state)
+                output = self.visual.blocks[blk_id].drop_path1(output)
+                
+            elif type == "mlp":
+                output = self.visual.blocks[blk_id].drop_path2(self.visual.blocks[blk_id].mlp(self.visual.blocks[blk_id].norm2(hidden_state)))
+            center = None
+            
+        else:
+            x = self.visual.norm(hidden_state[:, 1:, :])
+            x = self.visual.fc_norm(x)
+            x = self.trans2embed(x)
+            output = x
+            center = None
 
-        # add pos embedding
-        pos = self.pos_embed(center)  # [B, 512, 3]-->[B, 512, trans_dim]
-
-        # final input
-        x = torch.cat((cls_tokens, trans_group_input_tokens), dim=1)
-        pos = torch.cat((cls_pos, pos), dim=1)
-        # transformer
-        x = x + pos
-        # x = x.half()
-
-        # a patch_dropout of 0. would mean it is disabled and this function would do nothing but return what was passed in
-        x = self.patch_dropout(x)
-        x = self.visual.pos_drop(x)
-
-        # ModuleList not support forward
-        for i, blk in enumerate(self.visual.blocks):
-            x = blk(x)
-
-        x = self.visual.norm(x[:, 1:, :])
-        x = self.visual.fc_norm(x)
-        x = self.trans2embed(x)
-
-        return [x, group_input_tokens, center]
+        return [output, center]

@@ -22,7 +22,7 @@ class AffordQ(Dataset):
                  split='train',
                  **kwargs
                  ):
-        data_root='/home/yiyang/data/LASO_dataset'
+        data_root='/storage_fast/ycli/3d_affordance/LASO_dataset'
 
         self.split = split
         #
@@ -99,6 +99,8 @@ class AffordQ(Dataset):
 if __name__ == '__main__':
     train = AffordQ('train')
     print(len(train))
-    
+    point_set, cls, gt_mask, question, affordance, view_mask = train[0]
+    print(point_set.dtype, cls, gt_mask.shape, question, affordance, view_mask.shape)
     for p,cls,mask,q,aff in train:
+        break
         print(q)

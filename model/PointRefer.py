@@ -16,8 +16,6 @@ from model.mm_group import GPBlock
 
 from torchvision.ops import roi_align
 from transformers import AutoModel, AutoTokenizer
-import model.uni3d as models
-import logging
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # this disables a huggingface tokenizer warning (printed every epoch)
 
@@ -48,20 +46,6 @@ class Point_Encoder(nn.Module):
 
         return [[l0_xyz, l0_points], [l1_xyz, l1_points], [l2_xyz, l2_points], [l3_xyz, l3_points]]
 
-
-class ModelConfig:
-    def __init__(self, model_name, ckpt_path, pc_model, pretrained_pc, pc_feat_dim, embed_dim, group_size, num_group, pc_encoder_dim, patch_dropout, distributed=False):
-        self.model_name = model_name
-        self.ckpt_path = ckpt_path
-        self.pc_model = pc_model
-        self.pretrained_pc = pretrained_pc
-        self.pc_feat_dim = pc_feat_dim
-        self.embed_dim = embed_dim
-        self.group_size = group_size
-        self.num_group = num_group
-        self.pc_encoder_dim = pc_encoder_dim
-        self.patch_dropout = patch_dropout
-        self.distributed = distributed
 
 
 class PointRefer(nn.Module):
@@ -121,32 +105,6 @@ class PointRefer(nn.Module):
             SwapAxes(),
             nn.Linear(self.emb_dim // 8, 1),
         )
-        
-        config = ModelConfig(
-            model_name='create_uni3d', 
-            ckpt_path='/path/to/uni3d_model/model.pt', 
-            pc_model='eva_giant_patch14_560.m30m_ft_in22k_in1k', 
-            pretrained_pc='/path/to/eva_giant_patch14_560/model.safetensors', 
-            pc_feat_dim=1408,
-            embed_dim=1024,
-            group_size=32,
-            num_group=512,
-            pc_encoder_dim=512,
-            patch_dropout=0
-        )
-        
-        logging.info("=> creating model: {}".format(config.model_name))
-        self.model = getattr(models, config.model_name)(args=config)
-        self.model.to('cuda')
-
-        checkpoint = torch.load(config.ckpt_path, map_location='cuda')
-        logging.info('loaded checkpoint {}'.format(config.ckpt_path))
-
-        sd = checkpoint['module']
-        if not config.distributed and next(iter(sd.items()))[0].startswith('module'):
-            sd = {k[len('module.'):]: v for k, v in sd.items()}
-        self.model.load_state_dict(sd)
-        self.trans2encoder = nn.Linear(config.embed_dim, 512)        
 
         # self.cls_head = nn.Sequential(
         #     nn.Linear(self.emb_dim, self.emb_dim // 2),
@@ -157,7 +115,7 @@ class PointRefer(nn.Module):
         # )
         
 
-    def forward(self, text, xyz):
+    def forward(self, text, xyz, view_mask):
 
         '''
         text: [B, L, 768]
@@ -169,36 +127,20 @@ class PointRefer(nn.Module):
         B, C, N = xyz.size()
 
         t_feat, t_mask = self.forward_text(list(text), xyz.device)  # [batch, q_len, d_model]
-        # F_p_wise = self.point_encoder(xyz)   
-        
-        rgb = torch.full((B, 3, N), 0.4, device=xyz.device)  
-        feature = torch.cat((xyz, rgb), dim=1)  
-
-        self.model.eval()
-        with torch.no_grad():
-            F_p_wise = get_model(self.model).encode_pc(feature.transpose(1, 2).contiguous())
-        x, p_1, center = F_p_wise
-        x = x / x.norm(dim=-1, keepdim=True)
- 
-        x = self.trans2encoder(x).to("cuda")
-        up_sample = x.permute(0, 2, 1)  
+        F_p_wise = self.point_encoder(xyz)     
 
         """ 
         Decoding
         """
-        points1 = torch.cat([xyz, xyz], 1)  
-        points2 = up_sample  
-        up_sample = self.gpb(t_feat, up_sample.transpose(-2, -1)).transpose(-2, -1) 
-        up_sample = self.fp1(xyz, center.permute(0, 2, 1), points1, points2) # [B, C(512), N(2048)]
-        # p_0, p_1, p_2, p_3 = F_p_wise
-        # p_3[1] = self.gpb(t_feat, p_3[1].transpose(-2, -1)).transpose(-2, -1)
-        # up_sample = self.fp3(p_2[0], p_3[0], p_2[1], p_3[1])   #[B, emb_dim, npoint_sa2]
+        p_0, p_1, p_2, p_3 = F_p_wise
+        p_3[1] = self.gpb(t_feat, p_3[1].transpose(-2, -1)).transpose(-2, -1)
+        up_sample = self.fp3(p_2[0], p_3[0], p_2[1], p_3[1])   #[B, emb_dim, npoint_sa2]
         
-        # up_sample = self.gpb(t_feat, up_sample.transpose(-2, -1)).transpose(-2, -1)
-        # up_sample = self.fp2(p_1[0], p_2[0], p_1[1], up_sample)    #[B, emb_dim, npoint_sa1]   
+        up_sample = self.gpb(t_feat, up_sample.transpose(-2, -1)).transpose(-2, -1)
+        up_sample = self.fp2(p_1[0], p_2[0], p_1[1], up_sample)    #[B, emb_dim, npoint_sa1]   
         
-        # up_sample = self.gpb(t_feat, up_sample.transpose(-2, -1)).transpose(-2, -1)         
-        # up_sample = self.fp1(p_0[0], p_1[0], torch.cat([p_0[0], p_0[1]],1), up_sample)  #[B, emb_dim, N]
+        up_sample = self.gpb(t_feat, up_sample.transpose(-2, -1)).transpose(-2, -1)         
+        up_sample = self.fp1(p_0[0], p_1[0], torch.cat([p_0[0], p_0[1]],1), up_sample)  #[B, emb_dim, N]
 
         # t_feat = t_feat.sum(1)/(t_mask.float().sum(1).unsqueeze(-1))
         # t_feat = t_feat.unsqueeze(1).repeat(1, self.n_groups,1)
@@ -232,14 +174,6 @@ class PointRefer(nn.Module):
         return self.text_resizer(encoded_text), tokenized_queries.attention_mask.bool()
 
 
-def get_model(model):
-    if isinstance(model, torch.nn.DataParallel) \
-      or isinstance(model, torch.nn.parallel.DistributedDataParallel):
-        return model.module
-    else:
-        return model
-
-
 def get_PointRefer(normal_channel=False, local_rank=None,
     N_p = 64, emb_dim = 512, proj_dim = 512, num_heads = 4, N_raw = 2048, num_affordance=17, n_groups=40):
     
@@ -264,4 +198,3 @@ if __name__ == "__main__":
 
     _3daffordance, logits = model(text, xyz)
     print(_3daffordance.shape, logits.shape)
-

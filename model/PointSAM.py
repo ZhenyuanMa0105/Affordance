@@ -5,9 +5,7 @@ import torch.nn.functional as F
 from torchvision import models
 from model.attention import MultiheadAttention, TransformerDecoder, TransformerDecoderLayer
 from model.point_encoder import PointNet_Encoder
-# from model.geo_aware_pooling import GeoAwarePooling
-# from model.view_weight_attn import ViewTranformer
-from model.view_weight_attn import ViewTranformer, ViewGlobalSampler, ViewLocalSampler, ViewDistanceSampler, DualDistanceSampler
+from model.view_weight_attn import CrossDistanceSampler
 from model.uni3d import PointUni3d
 from torchvision.ops import roi_align
 from transformers import AutoModel, AutoTokenizer
@@ -17,10 +15,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false" # this disables a huggingface tok
 
 class PointSAM(nn.Module):
     def __init__(self, normal_channel=False, local_rank=None,
-                N_p = 64, emb_dim = 512, proj_dim = 512, num_heads = 4, 
-                N_raw = 2048, num_affordance=18, freeze_text_encoder = False, 
-                text_encoder_type="roberta-base", n_groups=40, n_sample=20, 
-                point_encoder='uni3d'):
+                N_p = 64, emb_dim = 512, proj_dim = 512, num_heads = 4, N_raw = 2048, num_affordance=18,
+                freeze_text_encoder = False, text_encoder_type="roberta-base", n_groups=40, n_sample=20):
         class SwapAxes(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -44,18 +40,18 @@ class PointSAM(nn.Module):
         else:
             self.additional_channel = 0
 
-        self.text_encoder = AutoModel.from_pretrained(text_encoder_type)
-        self.tokenizer = AutoTokenizer.from_pretrained(text_encoder_type)
+        model_path = '/storage_fast/ycli/zhenyuan/LASO/model/robertabase'
+        self.text_encoder = AutoModel.from_pretrained(model_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.freeze_text_encoder = freeze_text_encoder
         if freeze_text_encoder:
             for p in self.text_encoder.parameters():
                 p.requires_grad_(False)
         self.text_resizer = nn.Sequential(nn.Linear(self.text_encoder.config.hidden_size, emb_dim, bias=True),
                                           nn.LayerNorm(emb_dim, eps=1e-12))
-        if point_encoder == 'uni3d':
-            self.point_encoder = PointUni3d(self.emb_dim, self.normal_channel, self.additional_channel, self.N_p)
-        else:
-            self.point_encoder = PointNet_Encoder(self.emb_dim, self.normal_channel, self.additional_channel, self.N_p)
+
+        self.point_encoder = PointUni3d(self.n_groups, self.emb_dim, self.normal_channel, self.additional_channel, 
+                                            self.N_p, self.text_encoder, self.tokenizer, self.text_resizer)
         # self.pos1d = nn.Embedding(self.n_groups, self.emb_dim)
         self.pos1d = nn.Parameter(torch.zeros(1, self.n_groups, self.emb_dim))
         nn.init.trunc_normal_(self.pos1d, std = 0.2) 
@@ -64,16 +60,9 @@ class PointSAM(nn.Module):
         self.pos3d = nn.Parameter(torch.zeros(1, self.n_sample + self.n_groups, self.emb_dim))
         nn.init.trunc_normal_(self.pos3d, std = 0.2)
         self.decoder = TransformerDecoder(TransformerDecoderLayer(self.emb_dim, nheads=num_heads, dropout=0),num_layers=1, norm=nn.LayerNorm(self.emb_dim))
-        # self.cross_attn = MultiheadAttention(self.emb_dim, self.num_heads)
-        # self.geo_pooling = GeoAwarePooling(self.emb_dim)
-        # self.view_transformer = ViewTranformer(self.emb_dim)
-        # self.view_sampler = ViewGlobalSampler(self.n_sample, self.emb_dim, self.num_heads)
-        # self.view_sampler = ViewLocalSampler(self.n_sample, self.emb_dim, self.num_heads)
-        # self.view_sampler = ViewDistanceSampler(self.n_sample, self.emb_dim, self.num_heads)
-        self.view_sampler = DualDistanceSampler(self.n_sample, self.emb_dim, self.num_heads)
-        # self.query_generator = QueryGenerationModule(self.emb_dim, self.num_heads)
+        self.cross_attn = MultiheadAttention(self.emb_dim, self.num_heads)
+        self.view_sampler = CrossDistanceSampler(self.n_sample, self.emb_dim, self.num_heads)
         
-
     def forward(self, text, xyz, view_mask):
 
         '''
@@ -85,36 +74,14 @@ class PointSAM(nn.Module):
 
         B, C, N = xyz.size()
 
-        point_feature = self.point_encoder(xyz)     
+        point_feature, t_feat, t_mask = self.point_encoder(xyz, list(text), xyz.device)      
 
-        # fs = self.geo_pooling(xyz, point_feature, view_mask)
-        t_feat, t_mask = self.forward_text(list(text), xyz.device)  # [batch, q_len, d_model]
-        # query = self.view_transformer(xyz, point_feature, view_mask)
         query, query_mask = self.view_sampler(point_feature, view_mask, t_feat, t_mask, xyz)
         query = self.decoder(query, point_feature.transpose(-2, -1), tgt_key_padding_mask=query_mask, query_pos=self.pos3d)
-        _3daffordance = torch.einsum('blc,bcn->bln', query, point_feature)
         query *= query_mask.unsqueeze(-1).float()
         
         _3daffordance = torch.einsum('blc,bcn->bln', query, point_feature)
         _3daffordance = _3daffordance.sum(1)/(query_mask.float().sum(1).unsqueeze(-1))
-        # # Expand t_mask to match the dimensions of t_feat for broadcasting
-        # masked_t_feat = t_feat * t_mask.unsqueeze(-1)  # Shape: [batch_size, q_len, d_model]
-        # sum_masked_t_feat = masked_t_feat.sum(dim=1)  # Shape: [batch_size, d_model]
-        # valid_counts = t_mask.sum(dim=1).unsqueeze(-1)  # Shape: [batch_size, 1]
-        # valid_counts = torch.clamp(valid_counts, min=1)
-        # mean_t_feat = sum_masked_t_feat / valid_counts  # Shape: [batch_size, d_model]        
-        # # query = self.cross_attn(fs, t_feat, t_feat, key_padding_mask=t_mask)
-        # query = query + mean_t_feat.unsqueeze(1)
-        
-        # query = self.decoder(query, point_feature.transpose(-2, -1), query_pos=self.pos2d)
-        # _3daffordance = torch.einsum('blc,bcn->bln', query, point_feature)
-        # _3daffordance = _3daffordance.mean(1)
-        
-        # t_feat = self.decoder(t_feat, query, tgt_key_padding_mask=t_mask, query_pos=self.pos1d) # b,l,c
-        # t_feat *= t_mask.unsqueeze(-1).float()
-        
-        # _3daffordance = torch.einsum('blc,bcn->bln', t_feat, point_feature)
-        # _3daffordance = _3daffordance.sum(1)/(t_mask.float().sum(1).unsqueeze(-1))
 
         _3daffordance = torch.sigmoid(_3daffordance)
         return _3daffordance.squeeze(-1)
@@ -137,12 +104,10 @@ class PointSAM(nn.Module):
         return self.text_resizer(encoded_text), tokenized_queries.attention_mask.bool()
 
 def get_PointSAM(normal_channel=False, local_rank=None,
-    N_p = 64, emb_dim = 512, proj_dim = 512, num_heads = 4, 
-    N_raw = 2048, num_affordance=17, n_groups=40, n_sample=20, point_encoder='uni3d'):
+    N_p = 64, emb_dim = 512, proj_dim = 512, num_heads = 4, N_raw = 2048, num_affordance=17, n_groups=40, n_sample=20):
     
     model = PointSAM( normal_channel, local_rank,
-        N_p, emb_dim, proj_dim, num_heads, N_raw, num_affordance, 
-        n_groups=n_groups, n_sample=n_sample, point_encoder=point_encoder)
+    N_p, emb_dim, proj_dim, num_heads, N_raw, num_affordance, n_groups=n_groups, n_sample=n_sample)
     return model
 
 
