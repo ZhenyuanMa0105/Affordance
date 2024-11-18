@@ -203,7 +203,7 @@ if __name__=='__main__':
     model = get_PointReferNet(emb_dim=dict['emb_dim'],
                        proj_dim=dict['proj_dim'], num_heads=dict['num_heads'], N_raw=dict['N_raw'],
                        num_affordance = dict['num_affordance'])
-    model_checkpoint = torch.load('/storage_fast/ycli/3d_affordance/PointReferNet_easyloader_predCLS/runs/train/PointRefer/best_model-balanced_data_at_10.24_0.47.31.pt', map_location='cuda:0')
+    model_checkpoint = torch.load('/path/to/PointReferNet_easyloader_predCLS/runs/train/PointRefer/best_model-balanced_data_at_10.24_0.47.31.pt', map_location='cuda:0')
     model.load_state_dict(model_checkpoint['model'])
     model.to(device)
    

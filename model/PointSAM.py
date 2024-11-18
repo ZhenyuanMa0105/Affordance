@@ -40,9 +40,8 @@ class PointSAM(nn.Module):
         else:
             self.additional_channel = 0
 
-        model_path = '/storage_fast/ycli/zhenyuan/LASO/model/robertabase'
-        self.text_encoder = AutoModel.from_pretrained(model_path)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.text_encoder = AutoModel.from_pretrained(text_encoder_type)
+        self.tokenizer = AutoTokenizer.from_pretrained(text_encoder_type)
         self.freeze_text_encoder = freeze_text_encoder
         if freeze_text_encoder:
             for p in self.text_encoder.parameters():
@@ -86,22 +85,6 @@ class PointSAM(nn.Module):
         _3daffordance = torch.sigmoid(_3daffordance)
         return _3daffordance.squeeze(-1)
 
-    def forward_text(self, text_queries, device):
-        """
-        text_queries : list of question str 
-        out: text_embedding: bs, len, dim
-            mask: bs, len (bool) [1,1,1,1,0,0]
-        """
-        # tokenized_queries = self.tokenizer.batch_encode_plus(text_queries, padding='longest', return_tensors='pt')
-        tokenized_queries = self.tokenizer.batch_encode_plus(text_queries, padding='max_length', truncation=True,
-                                                            max_length=self.n_groups,
-                                                            return_tensors='pt')
-        tokenized_queries = tokenized_queries.to(device)
-        with torch.inference_mode(mode=self.freeze_text_encoder):
-            encoded_text = self.text_encoder(**tokenized_queries).last_hidden_state
-        # print(tokenized_queries.attention_mask.bool())
-
-        return self.text_resizer(encoded_text), tokenized_queries.attention_mask.bool()
 
 def get_PointSAM(normal_channel=False, local_rank=None,
     N_p = 64, emb_dim = 512, proj_dim = 512, num_heads = 4, N_raw = 2048, num_affordance=17, n_groups=40, n_sample=20):
@@ -113,7 +96,7 @@ def get_PointSAM(normal_channel=False, local_rank=None,
 
 if __name__ == "__main__":
     import yaml
-    file = open('/storage_fast/ycli/yiyang/LASO/config/default.yaml', 'r', encoding='utf-8')
+    file = open('../config/config_seen.yaml', 'r', encoding='utf-8')
     string = file.read()
     dict = yaml.safe_load(string)
 

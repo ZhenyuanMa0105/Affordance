@@ -48,15 +48,15 @@ def inference_single(point_info, results_folder):
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--point_path', type=str, default='/storage_fast/ycli/3d_affordance/visualizer/data/top5-objaff.pkl', help='test point path')
-    parser.add_argument('--results_path', type=str, default='/storage_fast/ycli/3d_affordance/visualizer/ply_file/', help='save Demo path')
+    parser.add_argument('--point_path', type=str, default='/path/to/visualizer/data/top5-objaff.pkl', help='test point path')
+    parser.add_argument('--results_path', type=str, default='/path/to/visualizer/ply_file/', help='save Demo path')
 
     opt = parser.parse_args()
 
     with open(opt.point_path, 'rb') as file:
         top_points = pickle.load(file)[:2]
     
-    with open('/storage_fast/ycli/3d_affordance/visualizer/ply_file/path2all.text', 'w') as file:
+    with open('/path/to/visualizer/ply_file/path2all.text', 'w') as file:
         for points_info in top_points:
             GT_file, pred_file = inference_single(points_info, opt.results_path)
             file.write(GT_file + '\n')

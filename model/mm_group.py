@@ -315,7 +315,7 @@ class GPBlock(nn.Module):
 if __name__ == '__main__':
     import numpy as np
 
-    q = np.load('/storage_fast/ycli/3d_affordance/AffordanceNetQ_v1/question_bert.npy')
+    q = np.load('/path/to/AffordanceNetQ_v1/question_bert.npy')
     q = torch.from_numpy(q[:2,:,:])
     v = torch.rand(2, 2048, 32) # torch.rand(2, 64, 1024)
     print(q.shape)

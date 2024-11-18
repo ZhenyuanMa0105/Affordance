@@ -7,7 +7,7 @@ import Imath
 
 import os 
 
-# os.environ["LD_LIBRARY_PATH"] =  "/storage/ycli/anaconda3/envs/visual3d/lib"
+# os.environ["LD_LIBRARY_PATH"] =  "/path/to/anaconda3/envs/visual3d/lib"
 import OpenEXR
 
 # print(OpenEXR.__file__)
@@ -150,10 +150,10 @@ def EXR_to_JPG_batch(exr_folder, img_folder):
 
 
 if __name__=='__main__':
-    exr_file = '/storage_fast/ycli/3d_affordance/visualizer/xml_file/Bag_contain_0.355_abba6df6294f20c569ea850160c0b35_Pred.exr'
-    jpg_file = '/storage_fast/ycli/3d_affordance/visualizer/jpg/image.jpg'
-    rend_path = '/storage_fast/ycli/3d_affordance/visualizer/ply_file/path2all.text' # a txt file which contain all .ply file
-    save_path = '/storage_fast/ycli/3d_affordance/visualizer/xml_file/'
+    exr_file = '/path/to/visualizer/xml_file/Bag_contain_0.355_abba6df6294f20c569ea850160c0b35_Pred.exr'
+    jpg_file = '/path/to/visualizer/jpg/image.jpg'
+    rend_path = '/path/to/visualizer/ply_file/path2all.text' # a txt file which contain all .ply file
+    save_path = '/path/to/visualizer/xml_file/'
     # render_point(rend_path, save_path)
     ConvertEXRToJPG(exr_file, jpg_file)
 

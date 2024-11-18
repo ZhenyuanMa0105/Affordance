@@ -132,7 +132,7 @@ def evaluate(model, test_dataset, device, num_votes=3, top_n=10):
         dict['shape_id']=str(anno[dict['idx']]['shape_id'])
         dict['shape']=objects[str(anno[dict['idx']]['shape_id'])]
     
-    output_file_path = '/storage_fast/ycli/3d_affordance/visualizer/data/top{}-objaff.pkl'.format(top_n) 
+    output_file_path = '/path/to/visualizer/data/top{}-objaff.pkl'.format(top_n) 
     with open(output_file_path, 'wb') as file:
         pickle.dump(top_result, file)
 
@@ -146,7 +146,7 @@ if __name__=='__main__':
     model = get_PointReferNet(emb_dim=dict['emb_dim'],
                        proj_dim=dict['proj_dim'], num_heads=dict['num_heads'], N_raw=dict['N_raw'],
                        num_affordance = dict['num_affordance'], n_groups=20)
-    model_checkpoint = torch.load('/storage_fast/ycli/3d_affordance/10270_3GP_Q_Q_change_group/runs/train/PointRefer/best_model-20groups-1_at_10.28_1.20.54.pt', map_location='cuda:0')
+    model_checkpoint = torch.load('/path/to/10270_3GP_Q_Q_change_group/runs/train/PointRefer/best_model-20groups-1_at_10.28_1.20.54.pt', map_location='cuda:0')
     model.load_state_dict(model_checkpoint['model'])
     model.to(device)
    

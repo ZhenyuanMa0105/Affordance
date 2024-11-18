@@ -186,7 +186,7 @@ class Projector(nn.Module):
 
 if __name__=='__main__':
     
-    data_root='/storage_fast/ycli/3d_affordance/LASO_dataset'
+    data_root='/path/to/LASO_dataset'
     with open(os.path.join(data_root, f'objects_train.pkl'), 'rb') as f:
         objects_file = pickle.load(f)
     point_cloud = objects_file['1b67b4bfed6688ba5b22feddf58c05e1']

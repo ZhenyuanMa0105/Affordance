@@ -1,12 +1,4 @@
 # *_*coding:utf-8 *_*
-"""
-@File: LangSHAPE_dataloader.py
-@Time: 2024/6/18 18:40$
-@Author: Yaoxian
-@Version: 1.0
-@Contact: aarons.hdu@gmail.com
-@Desc: None
-"""
 
 import os
 # from mayavi import mlab
@@ -27,7 +19,7 @@ warnings.filterwarnings('ignore')
 
 
 class PartGroundingDataset(Dataset):
-    def __init__(self, root='/storage_fast/ycli/yiyang/LangSHAPE/', npoints=2048, split='train',
+    def __init__(self, root='/path/to/LangSHAPE/', npoints=2048, split='train',
                  train_mode='part-wise', class_choice=None, normal_channel=False, data_mode='full'):
         self.npoints = npoints
         self.root = root
@@ -141,47 +133,10 @@ class PartGroundingDataset(Dataset):
             if cat_part.lower() in self.lang_dict.keys():
                 self.datapath.append((self.cat2[cat_number], fn))
 
-        mask_dict_path = "/storage_fast/ycli/yiyang/LangSHAPE/seg/mask_dict_"+ split + ".pkl"
+        mask_dict_path = "/path/to/LangSHAPE/seg/mask_dict_"+ split + ".pkl"
         with open(mask_dict_path, 'rb') as f:
             self.view_mask = pickle.load(f)
-        # self.pc_data_dict = {}
-        # valid_datapath = []
-        # places = ['0', '1', '2']
-        # views = ['view_1', 'view_2', 'view_3', 'view_4', 'merge']
-        # for cat, fn in self.datapath:
-        #     # 读取 h5 文件数据
-        #     h5_path = os.path.join(self.root, 'pd_grasp_data', fn, 'partial_pc_grasp.h5')
-        #     with h5py.File(h5_path, 'r') as f:
-        #         place = random.choice(places)
-        #         view = random.choice(views)
-        #         # one view
-        #         pc_data_view = f[place + '/' + view][()]
-
-        #     # 预处理点云数据
-        #     pc_data_view = shuffle_points(pc_data_view)
-        #     point_set = pc_data_view[:, 0:3] if not self.normal_channel else pc_data_view[:, 0:6]
-        #     seg = pc_data_view[:, -1].astype(np.int32)
-        #     seg = self.mapping_shape(seg, file_name)
-        #     # 判断seg是否全为0或全为1
-        #     if np.all(seg == 0) or np.all(seg == 1):
-        #         print(seg)
-        #         continue  # 抛弃该样本
-        #     point_set = rot_augmentation(point_set[:, 0:3])
-        #     point_set[:, 0:3] = pc_normalize(point_set[:, 0:3])
-        #     point_set = jitter_point_cloud(point_set)
-
-        #     choice = np.random.choice(len(seg), self.npoints, replace=len(seg) < self.npoints)
-        #     point_set = point_set[choice, :]
-        #     seg = seg[choice]
-            
-        #     # 判断seg是否全为0或全为1
-        #     if np.all(seg == 0) or np.all(seg == 1):
-        #         continue  # 抛弃该样本
-
-        #     self.pc_data_dict[f"{fn}"] = (point_set, seg)
-        #     valid_datapath.append((cat, fn))
         
-        # self.datapath = valid_datapath
 
     @staticmethod
     def mapping_shape(point_seg, file_name):
@@ -268,7 +223,7 @@ class PartGroundingDataset(Dataset):
 #     mlab.savefig('grouding_part.png')
 
 def test_grounding_dataset(vis=False):
-    root = '/storage_fast/ycli/yiyang/LangSHAPE/'
+    root = '/path/to/LangSHAPE/'
     npoint = 2048
     train_mode = 'part-wise'
     normal = False

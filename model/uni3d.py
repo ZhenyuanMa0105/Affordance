@@ -83,9 +83,9 @@ class PointUni3d(nn.Module):
         
         config = ModelConfig(
             model_name='create_uni3d', 
-            ckpt_path='/storage_fast/ycli/zhenyuan/LASO/model/uni3d_model/model.pt', 
+            ckpt_path='/path/to/uni3d_model/model.pt', 
             pc_model='eva_giant_patch14_560.m30m_ft_in22k_in1k', 
-            pretrained_pc='/storage_fast/ycli/zhenyuan/LASO/model/eva_giant_patch14_560/model.safetensors',
+            pretrained_pc='/path/to/eva_giant_patch14_560/model.safetensors',
             pc_feat_dim=1408,
             embed_dim=1024,
             group_size=32,
@@ -142,15 +142,12 @@ class PointUni3d(nn.Module):
         t_mask = tokenized_queries.attention_mask.bool()
         encoder_attention_mask = t_mask[:, None, None, :]  # Shape: [batch_size, 1, 1, seq_length]
 
-        encoder_attention_mask = encoder_attention_mask.to(dtype=torch.float)  # Match dtype of attention_scores
-        encoder_attention_mask = (1.0 - encoder_attention_mask) * torch.finfo(torch.float).min  # Convert 1 -> 0 and 0 -> -inf
+        encoder_attention_mask = encoder_attention_mask.to(dtype=torch.float) 
+        encoder_attention_mask = (1.0 - encoder_attention_mask) * torch.finfo(torch.float).min 
         
         text_hidden_states = self.text_backbone.embeddings(input_ids=tokenized_queries['input_ids'])
         
         image_hidden_states = x
-        
-        #("length of roberta:", len(self.text_backbone.encoder.layer))
-        #print("hiddensize of roberta:", self.text_backbone.config.hidden_size)
         
         for i in range(len(self.text_backbone.encoder.layer)):
             text_layer = self.text_backbone.encoder.layer[i]
@@ -158,91 +155,48 @@ class PointUni3d(nn.Module):
                 F_p_wise = uni3d_model.encode_pc(None, i, len(self.text_backbone.encoder.layer), image_hidden_states, "norm")
                 image_hidden_states_norm, _= F_p_wise
                 F_p_wise = uni3d_model.encode_pc(None, i, len(self.text_backbone.encoder.layer), image_hidden_states_norm, "attention")
-                #image_hidden_states_norm = image_hidden_states_norm[:, 1:, :] 
                 image_hidden_states_attn, _= F_p_wise
-                #print("norm1.shape:", image_hidden_states_attn.shape)
-                #cls = image_hidden_states_attn[:, 0, :].unsqueeze(1)
-                #image_hidden_states_attn = image_hidden_states_attn[:, 1:, :] 
                 
-                #text_hidden_states_norm = text_layer.attention.output.LayerNorm(text_hidden_states)
                 text_adapter_1_output = self.text_adapters_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].down(text_hidden_states)
                 text_adapter_1_output_temp = self.shared_middle_layers_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)](text_adapter_1_output)
                 
                 image_adapter_1_output = self.image_adapters_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].down(image_hidden_states_norm)
                 image_adapter_1_output = self.shared_middle_layers_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)](image_adapter_1_output)
                 
-                #print("text_adapter_1_output.shape:", text_adapter_1_output.shape)
-                #print("image_adapter_1_output.shape:", image_adapter_1_output.shape)
-                #text_adapter_1_output_gpb = self.gpb_1(text_adapter_1_output, image_adapter_1_output)
-                #print("text_adapter_1_output_gpb.shape:", text_adapter_1_output_gpb.shape)
-                #image_adapter_1_output = self.gpb_2(image_adapter_1_output, text_adapter_1_output)
-                #print("image_adapter_1_output.shape:", image_adapter_1_output.shape)
-                
                 text_adapter_1_output = self.text_adapters_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].up(image_adapter_1_output)
                 image_adapter_1_output = self.image_adapters_1[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].up(text_adapter_1_output_temp)
 
-                #print("image_adapter_1_output.shape:", image_adapter_1_output.shape)
-                #print("text_hidden_states.shape:", text_hidden_states.shape)
-                #print("mask.shape:", t_mask.shape)
                 text_attn_self = text_layer.attention.self(hidden_states=text_hidden_states, attention_mask=encoder_attention_mask)[0]
                 text_attn = text_layer.attention.output.dense(text_attn_self)
                 text_attn = text_layer.attention.output.dropout(text_attn)
                 text_attn = text_hidden_states + image_adapter_1_output + text_attn
                 text_attn = text_layer.attention.output.LayerNorm(text_attn)
-                #text_attn = (text_attn,) + text_attn_self[1:]
                 text_hidden_states = text_attn
-                #text_hidden_states = text_layer.attention.output.LayerNorm(text_hidden_states)
-                '''
-                text_attn = text_layer.attention.self(hidden_states=text_hidden_states, attention_mask=t_mask.unsqueeze(1).unsqueeze(2))[0]
-                #text_attn = text_layer.attention.self(hidden_states=text_hidden_states_norm, attention_mask=t_mask.unsqueeze(1).unsqueeze(2))[0]
-                text_attn = text_layer.attention.output.dense(text_attn)
-                text_attn = text_layer.attention.output.dropout(text_attn)
-                text_hidden_states = text_hidden_states + image_adapter_1_output + text_attn
-                text_attn = text_layer.attention.output.LayerNorm(text_attn)
-                '''
-                #text_hidden_states = text_hidden_states + image_adapter_1_output + text_attn
-                image_hidden_states = image_hidden_states + text_adapter_1_output + image_hidden_states_attn
-                #image_hidden_states = self.ImageLayerNorm(image_hidden_states)
-                #image_hidden_states = image_hidden_states[:, 1:, :] + text_adapter_1_output + image_hidden_states_attn
-                #image_hidden_states = torch.cat((cls, image_hidden_states), dim=1)
                 
+                image_hidden_states = image_hidden_states + text_adapter_1_output + image_hidden_states_attn
                 
                 
                 F_p_wise = uni3d_model.encode_pc(None, i, len(self.text_backbone.encoder.layer), image_hidden_states, "mlp")
                 image_hidden_states_norm, _= F_p_wise
-                #cls = image_hidden_states_norm[:, 0, :].unsqueeze(1)
-                #image_hidden_states_norm = image_hidden_states_norm[:, 1:, :]
                 
                 text_adapter_2_output = self.text_adapters_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].down(text_hidden_states)
                 text_adapter_2_output_temp = self.shared_middle_layers_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)](text_adapter_2_output)
                 
                 image_adapter_2_output = self.image_adapters_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].down(image_hidden_states)
-                #image_adapter_2_output = self.image_adapters_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].down(image_hidden_states[:, 1:, :])
                 image_adapter_2_output = self.shared_middle_layers_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)](image_adapter_2_output)
                 
-                #text_adapter_2_output_gpb = self.gpb_1(text_adapter_2_output, image_adapter_2_output)
-                #print("text_adapter_2_output_gpb.shape:", text_adapter_2_output_gpb.shape)
-                #image_adapter_2_output = self.gpb_2(image_adapter_2_output, text_adapter_2_output)
-                #print("image_adapter_2_output.shape:", image_adapter_2_output.shape)
                 text_adapter_2_output = self.text_adapters_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].up(image_adapter_2_output)
                 image_adapter_2_output = self.image_adapters_2[i - (len(self.text_backbone.encoder.layer) - self.num_layers)].up(text_adapter_2_output_temp)
                 
-                #layernorm2_output = text_layer.attention.output.LayerNorm(text_hidden_states)
                 mlp_output = text_layer.intermediate.dense(text_hidden_states)
                 mlp_output = text_layer.intermediate.intermediate_act_fn(mlp_output)
                 mlp_output = text_layer.output.dense(mlp_output)
                 mlp_output = text_layer.output.dropout(mlp_output)  
                 mlp_output = text_hidden_states + image_adapter_2_output + mlp_output
                 mlp_output = text_layer.output.LayerNorm(mlp_output)
-                #text_mlp = text_layer.output(text_layer.intermediate(text_hidden_states))
-                #print("text_mlp.shape:", mlp_output.shape)
                 
                 text_hidden_states = mlp_output
-                #text_hidden_states = text_layer.output.LayerNorm(text_hidden_states)
                 image_hidden_states = image_hidden_states + text_adapter_2_output + image_hidden_states_norm
-                #image_hidden_states = self.ImageLayerNorm(image_hidden_states)
-                #image_hidden_states = image_hidden_states[:, 1:, :] + text_adapter_2_output + image_hidden_states_norm
-                #image_hidden_states = torch.cat((cls, image_hidden_states), dim=1)
             
             else:
                 text_hidden_states = text_layer(text_hidden_states, attention_mask=encoder_attention_mask)[0]
@@ -341,10 +295,8 @@ def fps(data, number):
     '''
     fps_data = farthest_point_sample(data, number)
     fps_data = data.gather(1, fps_data.unsqueeze(-1).expand(-1, -1, 3))
-    # fps_data = pointnet2_utils.gather_operation(data.transpose(1, 2).contiguous(), fps_idx).transpose(1,2).contiguous()
     return fps_data
 
-# https://github.com/Strawberry-Eat-Mango/PCT_Pytorch/blob/main/util.py 
 def knn_point(nsample, xyz, new_xyz):
     """
     Input:

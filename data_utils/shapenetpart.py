@@ -22,7 +22,7 @@ class AffordQ(Dataset):
                  split='train',
                  **kwargs
                  ):
-        data_root='/storage_fast/ycli/3d_affordance/LASO_dataset'
+        data_root='/path/to/LASO_dataset'
 
         self.split = split
         #
@@ -47,7 +47,7 @@ class AffordQ(Dataset):
     
         self.len = len(self.anno)
         
-        mask_dict_path = f'/home/yiyang/data/Rendered_LASO/mask_dict_{split}.pkl'
+        mask_dict_path = f'/path/to/Rendered_LASO/mask_dict_{split}.pkl'
         
         with open(mask_dict_path, 'rb') as f:
             self.view_mask = pickle.load(f)
